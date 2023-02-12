@@ -91,7 +91,7 @@ int self_online = TOX_CONNECTION_NONE;
 
 const char *tokenFile = "./token.txt";
 static char *NOTIFICATION__device_token = NULL;
-static const char *NOTIFICATION_GOTIFY_UP_PREFIX = "https://";
+static const char *NOTIFICATION_TOKEN_PREFIX = "https://";
 pthread_t notification_thread;
 int notification_thread_stop = 1;
 int need_send_notification = 0;
@@ -573,7 +573,7 @@ static void *notification_thread_func(__attribute__((unused)) void *data)
             }
             else
             {
-                dbg(9, "ping_push_service:NOTIFICATION_METHOD GOTIFY_UP\n");
+                dbg(9, "ping_push_service:NOTIFICATION_METHOD HTTPS\n");
                 int result = 1;
                 CURL *curl = NULL;
                 CURLcode res = 0;
@@ -581,9 +581,9 @@ static void *notification_thread_func(__attribute__((unused)) void *data)
                 size_t max_buf_len = strlen(NOTIFICATION__device_token) + 1;
 
                 if (
-                        (max_buf_len <= strlen(NOTIFICATION_GOTIFY_UP_PREFIX)) ||
-                        (strncmp(NOTIFICATION_GOTIFY_UP_PREFIX, NOTIFICATION__device_token,
-                                 strlen(NOTIFICATION_GOTIFY_UP_PREFIX)) != 0))
+                        (max_buf_len <= strlen(NOTIFICATION_TOKEN_PREFIX)) ||
+                        (strncmp(NOTIFICATION_TOKEN_PREFIX, NOTIFICATION__device_token,
+                                 strlen(NOTIFICATION_TOKEN_PREFIX)) != 0))
                 {
                     // HINT: token does not start with "https://"
                 }
