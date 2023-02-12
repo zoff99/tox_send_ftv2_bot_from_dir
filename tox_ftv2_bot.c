@@ -1026,13 +1026,13 @@ static void friend_request_callback(Tox *tox, const uint8_t *public_key,
     tox_update_savedata_file(tox, 0);
 }
 
-static void friend_lossless_packet_cb(__attribute__((unused)) Tox *tox,
-                                      __attribute__((unused)) uint32_t friend_number,
-                                      const uint8_t *data,
-                                      size_t length,
-                                      __attribute__((unused)) void *user_data)
+static void friend_lossless_packet_callback(__attribute__((unused)) Tox *tox,
+                                            __attribute__((unused)) uint32_t friend_number,
+                                            const uint8_t *data,
+                                            size_t length,
+                                            __attribute__((unused)) void *user_data)
 {
-    dbg(9, "enter friend_lossless_packet_cb:pktid=%d\n", data[0]);
+    dbg(9, "enter friend_lossless_packet_callback:pktid=%d\n", data[0]);
 
     if (length == 0)
     {
@@ -1051,6 +1051,43 @@ static void friend_lossless_packet_cb(__attribute__((unused)) Tox *tox,
     }
 }
 
+static void file_chunk_request_callback(Tox *tox, uint32_t friend_number, uint32_t file_number, uint64_t position,
+                               size_t length, __attribute__((unused)) void *user_data)
+{
+
+}
+
+static void file_recv_control_callback(Tox *tox, uint32_t friend_number, uint32_t file_number, Tox_File_Control control,
+                                       __attribute__((unused)) void *user_data)
+{
+
+}
+static void file_recv_callback(Tox *tox, uint32_t friend_number, uint32_t file_number, uint32_t kind, uint64_t file_size,
+                             const uint8_t *filename, size_t filename_length,
+                               __attribute__((unused)) void *user_data)
+{
+    /* We don't care about receiving avatars */
+    if (kind != TOX_FILE_KIND_DATA)
+    {
+        tox_file_control(tox, friend_number, file_number, TOX_FILE_CONTROL_CANCEL, NULL);
+        dbg(9, "file_recv_callback:cancel incoming avatar\n");
+        return;
+    }
+    else
+    {
+        // cancel all filetransfers. we don't want to receive files
+        tox_file_control(tox, friend_number, file_number, TOX_FILE_CONTROL_CANCEL, NULL);
+        dbg(9, "file_recv_callback:cancel incoming file\n");
+        return;
+    }
+}
+
+static void file_recv_chunk_callback(Tox *tox, uint32_t friend_number, uint32_t file_number, uint64_t position,
+const uint8_t *data, size_t length, void *user_data)
+{
+
+}
+
 static void set_cb(Tox *tox)
 {
     // ---------- CALLBACKS ----------
@@ -1058,7 +1095,12 @@ static void set_cb(Tox *tox)
     tox_callback_friend_connection_status(tox, friend_connection_status_callback);
     tox_callback_friend_request(tox, friend_request_callback);
     tox_callback_friend_message(tox, friend_message_callback);
-    tox_callback_friend_lossless_packet(tox, friend_lossless_packet_cb);
+    tox_callback_friend_lossless_packet(tox, friend_lossless_packet_callback);
+    // -------------------------------
+    tox_callback_file_chunk_request(tox, file_chunk_request_callback);
+    tox_callback_file_recv_control(tox, file_recv_control_callback);
+    tox_callback_file_recv(tox, file_recv_callback);
+    tox_callback_file_recv_chunk(tox, file_recv_chunk_callback);
     // ---------- CALLBACKS ----------
 }
 // tox functions ----------------------------------------------------
