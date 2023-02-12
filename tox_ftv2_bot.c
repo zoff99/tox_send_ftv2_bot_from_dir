@@ -1051,19 +1051,31 @@ static void friend_lossless_packet_callback(__attribute__((unused)) Tox *tox,
     }
 }
 
-static void file_chunk_request_callback(Tox *tox, uint32_t friend_number, uint32_t file_number, uint64_t position,
-                               size_t length, __attribute__((unused)) void *user_data)
+static void file_chunk_request_callback(Tox *tox,
+                                        uint32_t friend_number,
+                                        uint32_t file_number,
+                                        uint64_t position,
+                                        size_t length,
+                                        __attribute__((unused)) void *user_data)
 {
 
 }
 
-static void file_recv_control_callback(Tox *tox, uint32_t friend_number, uint32_t file_number, Tox_File_Control control,
+static void file_recv_control_callback(Tox *tox,
+                                       uint32_t friend_number,
+                                       uint32_t file_number,
+                                       Tox_File_Control control,
                                        __attribute__((unused)) void *user_data)
 {
 
 }
-static void file_recv_callback(Tox *tox, uint32_t friend_number, uint32_t file_number, uint32_t kind, uint64_t file_size,
-                             const uint8_t *filename, size_t filename_length,
+static void file_recv_callback(Tox *tox,
+                               uint32_t friend_number,
+                               uint32_t file_number,
+                               uint32_t kind,
+                               uint64_t file_size,
+                               const uint8_t *filename,
+                               size_t filename_length,
                                __attribute__((unused)) void *user_data)
 {
     /* We don't care about receiving avatars */
@@ -1082,8 +1094,13 @@ static void file_recv_callback(Tox *tox, uint32_t friend_number, uint32_t file_n
     }
 }
 
-static void file_recv_chunk_callback(Tox *tox, uint32_t friend_number, uint32_t file_number, uint64_t position,
-const uint8_t *data, size_t length, void *user_data)
+static void file_recv_chunk_callback(Tox *tox,
+                                     uint32_t friend_number,
+                                     uint32_t file_number,
+                                     uint64_t position,
+                                     const uint8_t *data,
+                                     size_t length,
+                                     __attribute__((unused)) void *user_data)
 {
 
 }
