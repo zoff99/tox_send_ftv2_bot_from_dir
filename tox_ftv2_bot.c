@@ -89,6 +89,11 @@ int tox_check_files_thread_stop = 0;
 int f_online = TOX_CONNECTION_NONE;
 int self_online = TOX_CONNECTION_NONE;
 
+const char *file_queue_dir = "./queue/";
+const char *file_transfer_dir = "./transfer/";
+const char *file_done_dir = "./done/";
+
+
 const char *tokenFile = "./token.txt";
 static char *NOTIFICATION__device_token = NULL;
 static const char *NOTIFICATION_TOKEN_PREFIX = "https://";
@@ -184,6 +189,8 @@ struct Node
 static void ping_push_service(void);
 static void trigger_push(void);
 static void do_counters(uint8_t k);
+static char* find_oldest_file_in_dir(const char* dir_name);
+static bool check_file_not_changed(const char *dir_name, const struct dirent *dir, time_t *mod_timestamp);
 // ------------------------------------------------------------------
 static bool tox_connect(Tox *tox, int num);
 static void tox_update_savedata_file(const Tox *tox, int num);
@@ -425,66 +432,6 @@ static void read_token_from_file(void)
     fclose(f);
 }
 
-static bool compare_m3_id(const uint8_t *id1, const uint8_t *id2)
-{
-    // -------------------
-    int length = 32;
-    int msg_hex_size = (length * 2) + 1;
-
-    char msg_hex[msg_hex_size + 1];
-    CLEAR(msg_hex);
-    bin2upHex((const uint8_t *)id1, length, msg_hex, msg_hex_size);
-
-    char msg_hex2[msg_hex_size + 1];
-    CLEAR(msg_hex2);
-    bin2upHex((const uint8_t *)id2, length, msg_hex2, msg_hex_size);
-
-    dbg(0, "m3:id1_hex=%s id2_hex=%s\n", msg_hex, msg_hex2);
-    // -------------------
-
-    const int tox_public_key_bin_size = 32;
-    int res = strncmp((const char*)id1, (const char*)id2, tox_public_key_bin_size);
-    if (res == 0)
-    {
-        dbg(0, "m3:*equal*\n");
-        return true;
-    }
-    else
-    {
-        dbg(0, "m3:NOT EQUAL\n");
-        return false;
-    }
-}
-
-static void check_m3_id(const uint8_t *message)
-{
-    list_node_t *node = list_at(list, 0);
-    if (node)
-    {
-        if (compare_m3_id(message, (const uint8_t*)((struct stringlist *)(node->val))->msgv3_id))
-        {
-            dbg(0, "incoming Message:check_m3_id:slot ZERO id found\n");
-            free(((struct stringlist *)(node->val))->s);
-            list_remove(list, node);
-        }
-    }
-}
-
-static size_t xnet_pack_u16(uint8_t *bytes, uint16_t v)
-{
-    bytes[0] = (v >> 8) & 0xff;
-    bytes[1] = v & 0xff;
-    return sizeof(v);
-}
-
-static size_t xnet_pack_u32(uint8_t *bytes, uint32_t v)
-{
-    uint8_t *p = bytes;
-    p += xnet_pack_u16(p, (v >> 16) & 0xffff);
-    p += xnet_pack_u16(p, v & 0xffff);
-    return p - bytes;
-}
-
 static void print_stats(Tox *tox, int num)
 {
     uint32_t num_friends = tox_self_get_friend_list_size(tox);
@@ -671,6 +618,13 @@ static void *thread_check_files(__attribute__((unused)) void *data)
 {
     while (tox_check_files_thread_stop != 1)
     {
+        char *found_name = find_oldest_file_in_dir(file_queue_dir);
+        if (found_name)
+        {
+            // dbg(9, "found oldest file in queue:%s\n", found_name);
+            free(found_name);
+        }
+
         yieldcpu(100); // pause for x ms
     }
 
@@ -780,6 +734,113 @@ static void check_commandline_options(int argc, char *argv[])
         }
     }
 }
+
+/*
+ * Caller must free the returned char buffer!
+ */
+static char* find_oldest_file_in_dir(const char* dir_name)
+{
+    if (!dir_name)
+    {
+        return NULL;
+    }
+
+    char *found_file_name = calloc(1 , (FILENAME_MAX + 1));
+    if (!found_file_name)
+    {
+        return NULL;
+    }
+
+    time_t mod_timestamp_cur = 0;
+    DIR *d;
+    struct dirent *dir;
+    d = opendir(dir_name);
+    if (d)
+    {
+        while ((dir = readdir(d)) != NULL)
+        {
+            if (dir->d_type == DT_REG)
+            {
+                if (!dir->d_name)
+                {
+                    // dbg(9, "wrong:NULL\n");
+                }
+                else if ((strlen(dir->d_name) == 1) && (dir->d_name[0] == '.'))
+                {
+                    // dbg(9, "wrong:s1=\n", dir->d_name);
+                }
+                else if ((strlen(dir->d_name) == 2) && (dir->d_name[0] == '.') && (dir->d_name[1] == '.'))
+                {
+                    // dbg(9, "wrong:s2=\n", dir->d_name);
+                }
+                else
+                {
+                    time_t mod_timestamp;
+                    if (check_file_not_changed(dir_name, dir, &mod_timestamp))
+                    {
+                        if (mod_timestamp_cur <= mod_timestamp)
+                        {
+                            // dbg(9, "younger file:%s %d %d\n", dir->d_name, mod_timestamp_cur, mod_timestamp, mod_timestamp - mod_timestamp_cur);
+                            mod_timestamp_cur = mod_timestamp;
+                            memset(found_file_name, 0, FILENAME_MAX);
+                            snprintf(found_file_name, FILENAME_MAX, "%s", dir->d_name);
+                        }
+                        else
+                        {
+                            // dbg(9, "OLDER file:%s %d %d\n", dir->d_name, mod_timestamp_cur, mod_timestamp, mod_timestamp - mod_timestamp_cur);
+                        }
+                    }
+                }
+            }
+        }
+        closedir(d);
+    }
+
+    return found_file_name;
+}
+
+static bool check_file_not_changed(const char *dir_name, const struct dirent *dir, time_t *mod_timestamp)
+{
+#define seconds_since_last_mod 1 // how long to wait before we process files (in seconds)
+
+    if (!dir_name)
+    {
+        return false;
+    }
+
+    if (!dir)
+    {
+        return false;
+    }
+
+    struct stat foo;
+    time_t mtime;
+    time_t time_now = time(NULL);
+
+    char filename_with_dir[FILENAME_MAX + 1];
+    CLEAR(filename_with_dir);
+    snprintf(filename_with_dir, FILENAME_MAX, "%s/%s", dir_name, dir->d_name);
+
+    stat(filename_with_dir, &foo);
+    mtime = foo.st_mtime;
+
+    // see if file is in use
+    if ((mtime + seconds_since_last_mod) < time_now)
+    {
+        // dbg(9, "ok:%s %d %d delta=%d\n", dir->d_name, (int)mtime, (int)time_now, time_now - mtime);
+        if (mod_timestamp)
+        {
+            *mod_timestamp = mtime;
+        }
+        return true;
+    }
+    else
+    {
+        // dbg(9, "access:mod=%s %d %d\n", dir->d_name, mtime, (int)time_now);
+    }
+
+    return false;
+}
 // util functions ---------------------------------------------------
 
 // tox functions ----------------------------------------------------
@@ -790,14 +851,14 @@ static void tox_log_cb__custom(__attribute__((unused)) Tox *tox,
                                const char *message,
                                __attribute__((unused)) void *user_data)
 {
-    dbg(9, "C-TOXCORE:1:%d:%s:%d:%s:%s\n", (int)level, file, (int)line, func, message);
+    dbg(9, "C-TOXCORE:1:%d:%s:%d:%s:%s\n", (int) level, file, (int) line, func, message);
 }
 
 static void tox_update_savedata_file(const Tox *tox, int num)
 {
     size_t size = tox_get_savedata_size(tox);
     char *savedata = calloc(1, size);
-    tox_get_savedata(tox, (uint8_t *)savedata);
+    tox_get_savedata(tox, (uint8_t *) savedata);
 
     char *savedata_filename1 = calloc(1, 1000);
     int ret_snprintf = snprintf(savedata_filename1, 900, "savedata_%d.tox", num);
@@ -843,7 +904,7 @@ static Tox *tox_init(int num)
         const char *proxy_host = "127.0.0.1\n";
         dbg(0, "setting proxy_host %s", proxy_host);
         uint16_t proxy_port = PROXY_PORT_TOR_DEFAULT;
-        dbg(0, "setting proxy_port %d\n", (int)proxy_port);
+        dbg(0, "setting proxy_port %d\n", (int) proxy_port);
         options.proxy_type = TOX_PROXY_TYPE_SOCKS5;
         options.proxy_host = proxy_host;
         options.proxy_port = proxy_port;
@@ -889,7 +950,7 @@ static bool tox_connect(Tox *tox, int num)
     dbg(9, "[%d]:bootstrapping ...\n", num);
     for (int i = 0; nodes[i].ip; i++)
     {
-        uint8_t *key = (uint8_t *)calloc(1, 100);
+        uint8_t *key = (uint8_t *) calloc(1, 100);
         hex_string_to_bin2(nodes[i].key, key);
         if (!key)
         {
@@ -899,7 +960,9 @@ static bool tox_connect(Tox *tox, int num)
         if (use_tor == 1)
         {
             // dummy node to bootstrap
-            tox_bootstrap(tox, "local", 7766, (uint8_t *)"2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1", NULL);
+            tox_bootstrap(tox, "local", 7766,
+                          (uint8_t *) "2AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1",
+                          NULL);
         }
         else
         {
@@ -919,23 +982,23 @@ static bool tox_connect(Tox *tox, int num)
 static void self_connection_change_callback(__attribute__((unused)) Tox *tox,
                                             TOX_CONNECTION status, void *userdata)
 {
-    uint8_t *unum = (uint8_t *)userdata;
+    uint8_t *unum = (uint8_t *) userdata;
     uint8_t num = *unum;
 
     switch (status)
     {
-    case TOX_CONNECTION_NONE:
-        dbg(9, "[%d]:Lost connection to the Tox network.\n", num);
-        break;
-    case TOX_CONNECTION_TCP:
-        dbg(9, "[%d]:Connected using TCP.\n", num);
-        break;
-    case TOX_CONNECTION_UDP:
-        dbg(9, "[%d]:Connected using UDP.\n", num);
-        break;
-    default:
-        dbg(9, "[%d]:Lost connection (unknown status) to the Tox network.\n", num);
-        break;
+        case TOX_CONNECTION_NONE:
+            dbg(9, "[%d]:Lost connection to the Tox network.\n", num);
+            break;
+        case TOX_CONNECTION_TCP:
+            dbg(9, "[%d]:Connected using TCP.\n", num);
+            break;
+        case TOX_CONNECTION_UDP:
+            dbg(9, "[%d]:Connected using UDP.\n", num);
+            break;
+        default:
+            dbg(9, "[%d]:Lost connection (unknown status) to the Tox network.\n", num);
+            break;
     }
 
     self_online = status;
@@ -951,14 +1014,16 @@ static void friend_message_callback(Tox *tox, uint32_t friend_number,
     size_t msg_hex_size = (length * 2) + 1;
     char msg_hex[msg_hex_size + 1];
     CLEAR(msg_hex);
-    bin2upHex((const uint8_t *)message, length, msg_hex, msg_hex_size);
+    bin2upHex((const uint8_t *) message, length, msg_hex, msg_hex_size);
     dbg(0, "incoming Message:msg_hex=%s\n", msg_hex);
 
     // HINT: check if this is a msgV3 message and then send an ACK back
-    if ((message) && (length > (TOX_MSGV3_MSGID_LENGTH + TOX_MSGV3_TIMESTAMP_LENGTH + TOX_MSGV3_GUARD)))
+    if ((message) &&
+        (length > (TOX_MSGV3_MSGID_LENGTH + TOX_MSGV3_TIMESTAMP_LENGTH + TOX_MSGV3_GUARD)))
     {
         dbg(0, "incoming Message:check:1:msgv3\n");
-        size_t pos = length - (TOX_MSGV3_MSGID_LENGTH + TOX_MSGV3_TIMESTAMP_LENGTH + TOX_MSGV3_GUARD);
+        size_t pos =
+                length - (TOX_MSGV3_MSGID_LENGTH + TOX_MSGV3_TIMESTAMP_LENGTH + TOX_MSGV3_GUARD);
 
         // check for guard
         uint8_t g1 = *(message + pos);
@@ -969,7 +1034,7 @@ static void friend_message_callback(Tox *tox, uint32_t friend_number,
         {
             dbg(0, "incoming Message:check:2:msgv3\n");
             size_t msgv3_ack_length = 1 + 2 + 32 + 4;
-            uint8_t *msgv3_ack_buffer = (uint8_t *)calloc(1, msgv3_ack_length + 1);
+            uint8_t *msgv3_ack_buffer = (uint8_t *) calloc(1, msgv3_ack_length + 1);
             if (msgv3_ack_buffer)
             {
                 uint8_t *p = msgv3_ack_buffer;
@@ -977,7 +1042,9 @@ static void friend_message_callback(Tox *tox, uint32_t friend_number,
                 p = p + 1;
                 p = p + 2;
                 memcpy(p, (message + 3), TOX_MSGV3_MSGID_LENGTH);
-                uint32_t res = tox_friend_send_message(tox, friend_number, TOX_MESSAGE_TYPE_HIGH_LEVEL_ACK, msgv3_ack_buffer, msgv3_ack_length, NULL);
+                uint32_t res = tox_friend_send_message(tox, friend_number,
+                                                       TOX_MESSAGE_TYPE_HIGH_LEVEL_ACK,
+                                                       msgv3_ack_buffer, msgv3_ack_length, NULL);
                 dbg(0, "incoming Message:msgv3:send ACK:res=%d\n", res);
                 free(msgv3_ack_buffer);
             }
@@ -990,23 +1057,23 @@ static void friend_connection_status_callback(__attribute__((unused)) Tox *tox,
                                               Tox_Connection connection_status,
                                               void *userdata)
 {
-    uint8_t *unum = (uint8_t *)userdata;
+    uint8_t *unum = (uint8_t *) userdata;
     uint8_t num = *unum;
 
     switch (connection_status)
     {
-    case TOX_CONNECTION_NONE:
-        dbg(9, "[%d]:Lost connection to friend %d\n", num, friend_number);
-        break;
-    case TOX_CONNECTION_TCP:
-        dbg(9, "[%d]:Connected to friend %d using TCP\n", num, friend_number);
-        break;
-    case TOX_CONNECTION_UDP:
-        dbg(9, "[%d]:Connected to friend %d using UDP\n", num, friend_number);
-        break;
-    default:
-        dbg(9, "[%d]:Lost connection (unknown status) to friend %d\n", num, friend_number);
-        break;
+        case TOX_CONNECTION_NONE:
+            dbg(9, "[%d]:Lost connection to friend %d\n", num, friend_number);
+            break;
+        case TOX_CONNECTION_TCP:
+            dbg(9, "[%d]:Connected to friend %d using TCP\n", num, friend_number);
+            break;
+        case TOX_CONNECTION_UDP:
+            dbg(9, "[%d]:Connected to friend %d using UDP\n", num, friend_number);
+            break;
+        default:
+            dbg(9, "[%d]:Lost connection (unknown status) to friend %d\n", num, friend_number);
+            break;
     }
 
     f_online = connection_status;
@@ -1017,7 +1084,7 @@ static void friend_request_callback(Tox *tox, const uint8_t *public_key,
                                     __attribute__((unused)) size_t length,
                                     void *userdata)
 {
-    uint8_t *unum = (uint8_t *)userdata;
+    uint8_t *unum = (uint8_t *) userdata;
     uint8_t num = *unum;
 
     TOX_ERR_FRIEND_ADD err;
@@ -1069,6 +1136,7 @@ static void file_recv_control_callback(Tox *tox,
 {
 
 }
+
 static void file_recv_callback(Tox *tox,
                                uint32_t friend_number,
                                uint32_t file_number,
@@ -1144,6 +1212,10 @@ int main(int argc, char *argv[])
 
     f_online = TOX_CONNECTION_NONE;
     self_online = TOX_CONNECTION_NONE;
+
+    mkdir(file_queue_dir, S_IRWXU);
+    mkdir(file_transfer_dir, S_IRWXU);
+    mkdir(file_done_dir, S_IRWXU);
 
     read_token_from_file();
 
