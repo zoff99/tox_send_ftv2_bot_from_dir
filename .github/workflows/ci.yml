@@ -1,0 +1,118 @@
+name: custom_tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux-ub20:
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v3
+      - run: |
+          sudo apt-get update && \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get remove g++ && \
+          sudo DEBIAN_FRONTEND=noninteractive \
+          apt-get install -y --no-install-recommends \
+          ca-certificates \
+          clang \
+          cmake \
+          git \
+          libcurl4-gnutls-dev \
+          libconfig-dev \
+          libgtest-dev \
+          libopus-dev \
+          libsodium-dev \
+          libvpx-dev \
+          llvm-dev \
+          ninja-build \
+          pkg-config \
+          libavutil-dev \
+          libavcodec-dev \
+          libavformat-dev \
+          libavfilter-dev \
+          libx264-dev
+      - run: git clone https://github.com/zoff99/c-toxcore
+      - name: build_toxcore
+        run: |
+          cd c-toxcore/ && \
+          CC=clang cmake -B_build -H. -GNinja \
+          -DCMAKE_INSTALL_PREFIX:PATH="$PWD/_install" \
+          -DCMAKE_C_FLAGS="-g -O1 -Wno-everything -Wno-missing-variable-declarations -fno-omit-frame-pointer -fsanitize=address" \
+          -DCMAKE_CXX_FLAGS="-g -O1 -Wno-everything -Wno-missing-variable-declarations -fno-omit-frame-pointer -fsanitize=address" \
+          -DCMAKE_EXE_LINKER_FLAGS="-g -O1 -Wno-everything -Wno-missing-variable-declarations -fno-omit-frame-pointer -fsanitize=address" \
+          -DCMAKE_SHARED_LINKER_FLAGS="-g -O1 -Wno-everything -Wno-missing-variable-declarations -fno-omit-frame-pointer -fsanitize=address" \
+          -DMIN_LOGGER_LEVEL=INFO \
+          -DMUST_BUILD_TOXAV=ON \
+          -DNON_HERMETIC_TESTS=OFF \
+          -DSTRICT_ABI=OFF \
+          -DUSE_IPV6=OFF \
+          -DAUTOTEST=OFF \
+          -DBUILD_MISC_TESTS=OFF \
+          -DBUILD_FUN_UTILS=OFF
+          cd _build
+          ninja install -j"$(nproc)"
+      - name: build_and_run
+        run: |
+          pwd
+          export PKG_CONFIG_PATH="$PWD"/c-toxcore/_install/lib/pkgconfig
+          export LD_LIBRARY_PATH="$PWD"/c-toxcore/_install/lib
+          echo "CCC:------------------------------"
+          clang -g -O3 -fno-omit-frame-pointer -fsanitize=address \
+          -Wno-everything -Wno-missing-variable-declarations \
+          $(pkg-config --cflags toxcore libsodium libcurl) \
+          $(pkg-config --libs toxcore libsodium libcurl) \
+          tox_ftv2_bot.c \
+          list.c list_iterator.c list_node.c \
+          -o tox_ftv2_bot
+          echo "RUN:------------------------------"
+          ./tox_ftv2_bot -v
+          ./tox_ftv2_bot -h
+
+  linux-ublatest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - run: |
+          sudo apt-get update && \
+          sudo DEBIAN_FRONTEND=noninteractive \
+          apt-get install -y --no-install-recommends \
+          make  \
+          curl wget git \
+          coreutils autoconf autotools-dev libtool \
+          pkg-config libsodium-dev \
+          libcurl4-gnutls-dev
+      - run: git clone https://github.com/zoff99/c-toxcore
+      - name: build_toxcore
+        run: |
+            export _INST_="$PWD/build/inst_ct" && \
+            cd c-toxcore && \
+            export CFLAGS=" -DMIN_LOGGER_LEVEL=LOGGER_LEVEL_INFO -D_GNU_SOURCE -g -O2 \
+            -I$_INST_/include/ -fPIC -Wall -Wextra -fstack-protector-all \
+            -Wno-unused-function -fno-omit-frame-pointer -Wno-unused-parameter \
+            -Wno-unused-variable -Wno-unused-but-set-variable " && \
+            export LDFLAGS=" -O2 -L$_INST_/lib -fPIC " && \
+            ./autogen.sh && \
+            ./configure \
+              --prefix=$_INST_ \
+              --disable-soname-versions --disable-testing --enable-logging --disable-shared && \
+            make clean && \
+            make -j $(nproc) && \
+            make install
+      - name: build_and_run
+        run: |
+            gcc -O2 -g -fPIC -I$PWD/build/inst_ct/include \
+            -L$PWD/build/inst_ct/lib \
+            -fsanitize=address -fno-omit-frame-pointer \
+            tox_ftv2_bot.c \
+            list.c list_iterator.c list_node.c \
+            $PWD/build/inst_ct/lib/libtoxcore.a \
+            $PWD/build/inst_ct/lib/libtoxencryptsave.a \
+            -l:libsodium.a \
+            -lpthread \
+            -lcurl \
+            -o tox_ftv2_bot
+            echo "RUN:------------------------------"
+            ./tox_ftv2_bot -v
+            ./tox_ftv2_bot -h
+
