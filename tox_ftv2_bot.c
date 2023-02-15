@@ -21,6 +21,8 @@
 #pragma clang diagnostic ignored "-Wdeclaration-after-statement"
 
 #define _GNU_SOURCE // NOLINT(bugprone-reserved-identifier)
+#define _FILE_OFFSET_BITS 64 // NOLINT(bugprone-reserved-identifier)
+#define _LARGEFILE_SOURCE // NOLINT(bugprone-reserved-identifier)
 
 #include <ctype.h>
 #include <inttypes.h>
@@ -81,31 +83,30 @@ int use_tor = 0;
 int spin = SPINS_UP_NUM;
 uint8_t x = 1;
 struct Tox *toxes[SPINS_UP_NUM];
-int tox_check_files_thread_stop = 0;
-int f_online = TOX_CONNECTION_NONE;
-int self_online = TOX_CONNECTION_NONE;
+static int tox_check_files_thread_stop = 0;
+static int f_online = TOX_CONNECTION_NONE;
+static int self_online = TOX_CONNECTION_NONE;
 
 const char *file_queue_dir = "./queue/";
 const char *file_transfer_dir = "./transfer/";
 const char *file_done_dir = "./done/";
 
-
-const char *tokenFile = "./token.txt";
+static const char *tokenFile = "./token.txt";
 static char *NOTIFICATION__device_token = NULL;
 static const char *NOTIFICATION_TOKEN_PREFIX = "https://";
 pthread_t notification_thread;
-int notification_thread_stop = 1;
-int need_send_notification = 0;
+static int notification_thread_stop = 1;
+static int need_send_notification = 0;
 #define SEND_PUSH_TRIED_FOR_1_MESSAGE_MAX 50
-int send_notification_counter = SEND_PUSH_TRIED_FOR_1_MESSAGE_MAX;
+static int send_notification_counter = SEND_PUSH_TRIED_FOR_1_MESSAGE_MAX;
 
 #define save_iters 800000
 #define save_iters_minus_10 (800000 - 10)
-long save_counter = save_iters_minus_10;
-const long bootstrap_iters = 30000;
-long bootstrap_counter = 0;
+static long save_counter = save_iters_minus_10;
+static const long bootstrap_iters = 30000;
+static long bootstrap_counter = 0;
 
-long last_send_push_timestamp_unix = 0;
+static long last_send_push_timestamp_unix = 0;
 
 struct filelist
 {
@@ -113,11 +114,15 @@ struct filelist
     char *file_name_local_with_path; // filename with path, free this one
     char *file_name_remote;          // filename to send to remote, free this one
     uint8_t *file_id;                // free this one
+    int status;
+    int64_t file_transfer_num;
+    uint32_t file_transfer_start_time; // filetransfer start at unixtimestamp in seconds (since epoch)
     size_t file_size_in_bytes;
 };
-list_t *list = NULL;
+static list_t *list = NULL;
 #define MAX_FILELIST_ENTRIES 5
-pthread_mutex_t files_lock;
+static pthread_mutex_t files_lock;
+uint32_t ft_transferring = 0;
 
 struct curl_string
 {
@@ -134,6 +139,17 @@ typedef enum CONTROL_PROXY_MESSAGE_TYPE
     CONTROL_PROXY_MESSAGE_TYPE_NOTIFICATION_TOKEN = 179,
     CONTROL_PROXY_MESSAGE_TYPE_PUSH_URL_FOR_FRIEND = 181
 } CONTROL_PROXY_MESSAGE_TYPE;
+
+#define FT_TIMEOUT_ACCEPT_SECONDS 50
+typedef enum FT_STATUS
+{
+    FT_STATUS_NONE = 0,
+    FT_STATUS_STARTED = 1,
+    FT_STATUS_ACCEPTED = 2,
+    FT_STATUS_TRANSFERRING = 3,
+    FT_STATUS_FINISHED = 80,
+    FT_STATUS_CANCELED = 99,
+} FT_STATUS;
 
 struct Node
 {
@@ -187,10 +203,11 @@ static void trigger_push(void);
 static void do_counters(uint8_t k);
 static char* find_oldest_file_in_dir(const char* dir_name);
 static bool check_file_not_changed(const char *dir_name, const struct dirent *dir, time_t *mod_timestamp);
+static void cleanup_transfer_dir(const char *transfer_dir, const char *queue_dir);
 // ------------------------------------------------------------------
 static bool tox_connect(Tox *tox, int num);
 static void tox_update_savedata_file(const Tox *tox, int num);
-static void cleanup_transfer_dir(const char *dir, const char *dir1);
+static int64_t tox_start_a_filetransfer(Tox *tox, size_t f_size_bytes, const uint8_t *file_id, const char *filename);
 // function definitions ---------------------------------------------
 
 // util functions ---------------------------------------------------
@@ -422,9 +439,9 @@ static void read_token_from_file(void)
         return;
     }
 
-    fseek(f, 0, SEEK_END);
-    long fsize = ftell(f);
-    fseek(f, 0, SEEK_SET);
+    fseeko(f, 0, SEEK_END);
+    off_t fsize = ftello(f);
+    fseeko(f, 0, SEEK_SET);
 
     if (fsize < 1)
     {
@@ -512,7 +529,7 @@ static void do_counters(uint8_t k)
     if (save_counter >= save_iters)
     {
         tox_update_savedata_file(toxes[k], k);
-        dbg(8, "[%d]:ID:1: saving data\n", k);
+        dbg(9, "[%d]:ID:1: saving data\n", k);
     }
 
     if (save_counter >= save_iters)
@@ -765,6 +782,9 @@ static void put_file_in_transfer_dir(const char *file_name, const char *queue_di
                 item->file_name_local_with_path = strndup(file_name_with_path_transfer, PATH_MAX);
                 item->file_name_remote = strndup(file_name, PATH_MAX); // TODO: mask original filename?
                 item->file_size_in_bytes = file_size(file_name_with_path_transfer);
+                item->status = FT_STATUS_NONE;
+                item->file_transfer_num = -1;
+                item->file_transfer_start_time = 0;
 
                 pthread_mutex_lock(&files_lock);
                 list_node_t *node = list_node_new(item);
@@ -795,10 +815,12 @@ static void put_file_in_transfer_dir(const char *file_name, const char *queue_di
     free(file_name_with_path_transfer);
 }
 
-static void *thread_check_files(__attribute__((unused)) void *data)
+static void *thread_check_files(void *data)
 {
+    Tox *t = (Tox *) data;
     while (tox_check_files_thread_stop != 1)
     {
+        // ----- check for new files and put them into transfer dir and filelist -----
         char *found_name = find_oldest_file_in_dir(file_queue_dir);
         if (found_name)
         {
@@ -806,12 +828,186 @@ static void *thread_check_files(__attribute__((unused)) void *data)
             put_file_in_transfer_dir(found_name, file_queue_dir, file_transfer_dir);
             free(found_name);
         }
+        // ----- check for new files and put them into transfer dir and filelist -----
+
+        // ----- check if we need to initiate a filetransfer -----
+        if (f_online != TOX_CONNECTION_NONE)
+        {
+            if (list_items() > 0)
+            {
+                pthread_mutex_lock(&files_lock);
+                list_node_t *node = list_at(list, 0);
+                if (node != NULL)
+                {
+                    struct filelist *sl = (struct filelist *)(node->val);
+                    const char* f_local = ((struct filelist *) (node->val))->file_name_local;
+                    const uint8_t * f_id = ((struct filelist *) (node->val))->file_id;
+                    int f_status = ((struct filelist *) (node->val))->status;
+                    int64_t ft_num = ((struct filelist *) (node->val))->file_transfer_num;
+                    const size_t f_size = ((struct filelist *) (node->val))->file_size_in_bytes;
+                    uint32_t ft_starttime = ((struct filelist *) (node->val))->file_transfer_start_time;
+                    dbg(9, "we found a file in the filelist: ftnum: %ld status: %d filelocal: %s\n", ft_num, f_status, f_local);
+
+                    if (f_status == FT_STATUS_NONE)
+                    {
+                        int64_t ftstart_res = tox_start_a_filetransfer(t, f_size, f_id, f_local);
+                        if (ftstart_res == -1)
+                        {
+                            dbg(0, "error while trying to start filetransfer: filelocal: %s\n", f_local);
+                        }
+                        else
+                        {
+                            dbg(2, "started filetransfer: ftnum: %ld filelocal: %s\n", ftstart_res, f_local);
+                            ft_num = ftstart_res;
+                            ((struct filelist *) (node->val))->file_transfer_num = ft_num;
+                            f_status = FT_STATUS_STARTED;
+                            ((struct filelist *) (node->val))->status = f_status;
+                            ft_starttime = (uint32_t)get_unix_time();
+                            ((struct filelist *) (node->val))->file_transfer_start_time = ft_starttime;
+                        }
+                    }
+                    else if (f_status == FT_STATUS_CANCELED)
+                    {
+                        dbg(0, "cancelled filetransfer: filelocal: %s\n", f_local);
+                        f_status = FT_STATUS_NONE;
+                        ((struct filelist *) (node->val))->status = f_status;
+                    }
+                    else if (f_status == FT_STATUS_STARTED)
+                    {
+                        if ((ft_starttime + FT_TIMEOUT_ACCEPT_SECONDS) < (uint32_t)get_unix_time())
+                        {
+                            dbg(1, "started filetransfer not accepted yet: filelocal: %s\n", f_local);
+                            Tox_Err_File_Control error;
+                            tox_file_control(t, 0, ft_num, TOX_FILE_CONTROL_CANCEL, &error);
+                            if (error == TOX_ERR_FILE_CONTROL_OK)
+                            {
+                                int64_t ftstart_res = tox_start_a_filetransfer(t, f_size, f_id, f_local);
+                                if (ftstart_res == -1)
+                                {
+                                    dbg(0, "error while trying to start filetransfer AGAIN: filelocal: %s\n", f_local);
+                                    f_status = FT_STATUS_NONE;
+                                    ((struct filelist *) (node->val))->status = f_status;
+                                }
+                                else
+                                {
+                                    dbg(8, "started filetransfer AGAIN: ftnum: %ld filelocal: %s\n", ftstart_res, f_local);
+                                    ft_num = ftstart_res;
+                                    ((struct filelist *) (node->val))->file_transfer_num = ft_num;
+                                    f_status = FT_STATUS_STARTED;
+                                    ((struct filelist *) (node->val))->status = f_status;
+                                    ft_starttime = (uint32_t)get_unix_time();
+                                    ((struct filelist *) (node->val))->file_transfer_start_time = ft_starttime;
+                                }
+                            }
+                            else
+                            {
+                                dbg(0, "error while trying to cancel filetransfer: filelocal: %s\n", f_local);
+                                f_status = FT_STATUS_NONE;
+                                ((struct filelist *) (node->val))->status = f_status;
+                            }
+                        }
+                    }
+                    else if (f_status == FT_STATUS_FINISHED)
+                    {
+                        bool res = move_file(f_local, file_transfer_dir, file_done_dir);
+                        ft_transferring--;
+                        if (ft_transferring < 0)
+                        {
+                            ft_transferring = 0;
+                        }
+                        dbg(8, "set ft_transferring [--]: %d\n", ft_transferring);
+                        if (!res)
+                        {
+                            dbg(0, "moving file to done dir failed: filelocal: %s\n", f_local);
+                        }
+                        free(((struct filelist *) (node->val))->file_id);
+                        free(((struct filelist *) (node->val))->file_name_local);
+                        free(((struct filelist *) (node->val))->file_name_local_with_path);
+                        free(((struct filelist *) (node->val))->file_name_remote);
+                        list_remove(list, node);
+                    }
+                }
+                pthread_mutex_unlock(&files_lock);
+            }
+        }
+        // ----- check if we need to initiate a filetransfer -----
 
         yieldcpu(1000); // pause for x ms
     }
 
     dbg(2, "Tox:check files thread exit!\n");
     return NULL;
+}
+
+static void accepted_ft_in_list(uint32_t file_number)
+{
+    if (list_items() > 0)
+    {
+        pthread_mutex_lock(&files_lock);
+        if (!list)
+        {
+            pthread_mutex_unlock(&files_lock);
+            return;
+        }
+
+        list_iterator_t *it = list_iterator_new(list, LIST_HEAD);
+        list_node_t *node = list_iterator_next(it);
+        while (node)
+        {
+            struct filelist *sl = (struct filelist *)(node->val);
+            int64_t ft_num = ((struct filelist *) (node->val))->file_transfer_num;
+            int ft_status = ((struct filelist *) (node->val))->status;
+            if (ft_num == file_number)
+            {
+                if (ft_status == FT_STATUS_STARTED)
+                {
+                    dbg(8, "found ftnum in list: %ld setting status to FT_STATUS_ACCEPTED\n", ft_num);
+                    ((struct filelist *) (node->val))->status = FT_STATUS_ACCEPTED;
+                }
+            }
+            node = list_iterator_next(it);
+        }
+        list_iterator_destroy(it);
+        pthread_mutex_unlock(&files_lock);
+    }
+}
+
+static void cancel_ft_in_list(uint32_t file_number)
+{
+    if (list_items() > 0)
+    {
+        pthread_mutex_lock(&files_lock);
+        if (!list)
+        {
+            pthread_mutex_unlock(&files_lock);
+            return;
+        }
+
+        list_iterator_t *it = list_iterator_new(list, LIST_HEAD);
+        list_node_t *node = list_iterator_next(it);
+        while (node)
+        {
+            struct filelist *sl = (struct filelist *)(node->val);
+            int64_t ft_num = ((struct filelist *) (node->val))->file_transfer_num;
+            if (ft_num == file_number)
+            {
+                if (((struct filelist *) (node->val))->status == FT_STATUS_TRANSFERRING)
+                {
+                    ft_transferring--;
+                    if (ft_transferring < 0)
+                    {
+                        ft_transferring = 0;
+                    }
+                    dbg(8, "set ft_transferring [--]: %d\n", ft_transferring);
+                }
+                dbg(8, "found ftnum in list: %ld setting status to FT_STATUS_CANCELED\n", ft_num);
+                ((struct filelist *) (node->val))->status = FT_STATUS_CANCELED;
+            }
+            node = list_iterator_next(it);
+        }
+        list_iterator_destroy(it);
+        pthread_mutex_unlock(&files_lock);
+    }
 }
 
 static void trigger_push(void)
@@ -1084,6 +1280,24 @@ static void tox_update_savedata_file(const Tox *tox, int num)
     free(savedata);
 }
 
+static int64_t tox_start_a_filetransfer(Tox *tox, size_t f_size_bytes, const uint8_t *file_id, const char *filename)
+{
+    Tox_Err_File_Send error;
+    uint32_t res = tox_file_send(tox, 0, TOX_FILE_KIND_FTV2,
+                                 (uint64_t)f_size_bytes, file_id,
+                                 (const uint8_t *)filename, (size_t)strlen(filename),
+                                 &error);
+
+    if (error == TOX_ERR_FILE_SEND_OK)
+    {
+        return (int64_t)res;
+    }
+    else
+    {
+        return -1;
+    }
+}
+
 static Tox *tox_init(int num)
 {
     Tox *tox = NULL;
@@ -1338,7 +1552,99 @@ static void file_chunk_request_callback(Tox *tox,
                                         size_t length,
                                         __attribute__((unused)) void *user_data)
 {
+    dbg(9, "file_chunk_request_callback: friend_number: %d file_number: %d position: %lu length: %ld\n",
+        friend_number, file_number, position, length);
 
+    if (list_items() > 0)
+    {
+        pthread_mutex_lock(&files_lock);
+        if (!list)
+        {
+            pthread_mutex_unlock(&files_lock);
+            return;
+        }
+
+        list_iterator_t *it = list_iterator_new(list, LIST_HEAD);
+        list_node_t *node = list_iterator_next(it);
+        while (node)
+        {
+            struct filelist *sl = (struct filelist *)(node->val);
+            int64_t ft_num = ((struct filelist *) (node->val))->file_transfer_num;
+            size_t ft_in_size_bytes = ((struct filelist *) (node->val))->file_size_in_bytes;
+            const char *ft_name_with_path = ((struct filelist *) (node->val))->file_name_local_with_path;
+            const char *ft_name_local = ((struct filelist *) (node->val))->file_name_local;
+            const uint8_t *ft_id = ((struct filelist *) (node->val))->file_id;
+            int ft_status = ((struct filelist *) (node->val))->status;
+            if (ft_num == file_number)
+            {
+                if (ft_status != FT_STATUS_TRANSFERRING)
+                {
+                    dbg(8, "found ftnum in list: %ld setting status to FT_STATUS_TRANSFERRING\n", ft_num);
+                    ((struct filelist *) (node->val))->status = FT_STATUS_TRANSFERRING;
+                    ft_transferring++;
+                    dbg(8, "set ft_transferring [++]: %d\n", ft_transferring);
+                }
+
+                // ----------- check for ft finished -----------
+                if ((position == ft_in_size_bytes) && (length == 0))
+                {
+                    dbg(8, "filetransfer has finished: ftnum: %d file: %s\n", ft_num, ft_name_local);
+                    ((struct filelist *) (node->val))->status = FT_STATUS_FINISHED;
+                    list_iterator_destroy(it);
+                    pthread_mutex_unlock(&files_lock);
+                    return;
+                }
+                // ----------- check for ft finished -----------
+
+                Tox_Err_File_Send_Chunk error;
+                uint8_t *data = calloc(1, length + TOX_FILE_ID_LENGTH);
+                if (!data)
+                {
+                    dbg(0, "error allocating buffer for ft chunk: ftnum %ld\n", ft_num);
+                    list_iterator_destroy(it);
+                    pthread_mutex_unlock(&files_lock);
+                    return;
+                }
+                // HINT: read chunk from file into `data`
+                FILE *file_to_send = fopen(ft_name_with_path, "rb");
+                if (!file_to_send)
+                {
+                    dbg(0, "error opening file: ftnum %ld file: %s\n", ft_num, ft_name_with_path);
+                    free(data);
+                    list_iterator_destroy(it);
+                    pthread_mutex_unlock(&files_lock);
+                    return;
+                }
+
+                size_t filesize = file_size(ft_name_with_path);
+                if (filesize == 0)
+                {
+                    dbg(0, "file zero size: ftnum %ld file: %s\n", ft_num, ft_name_with_path);
+                    free(data);
+                    fclose(file_to_send);
+                    list_iterator_destroy(it);
+                    pthread_mutex_unlock(&files_lock);
+                    return;
+                }
+
+                fseeko(file_to_send, position, SEEK_SET); // NOLINT(cppcoreguidelines-narrowing-conversions)
+                size_t send_length = fread((data + TOX_FILE_ID_LENGTH), 1, length, file_to_send);
+                memcpy(data, ft_id, TOX_FILE_ID_LENGTH);
+
+                Tox_Err_File_Send_Chunk error2;
+                tox_file_send_chunk(tox, friend_number, file_number, position, data, (length + TOX_FILE_ID_LENGTH), &error2);
+                if (error2 != TOX_ERR_FILE_SEND_CHUNK_OK)
+                {
+                    dbg(8, "error sending file chunk: ftnum %ld errorcode: %d\n", ft_num, error);
+                }
+                free(data);
+                fclose(file_to_send);
+            }
+            node = list_iterator_next(it);
+        }
+        list_iterator_destroy(it);
+        pthread_mutex_unlock(&files_lock);
+    }
 }
 
 static void file_recv_control_callback(Tox *tox,
@@ -1347,7 +1653,17 @@ static void file_recv_control_callback(Tox *tox,
                                        Tox_File_Control control,
                                        __attribute__((unused)) void *user_data)
 {
+    dbg(8, "file_recv_control_callback: friend_number: %d file_number: %d ft_control: %d\n",
+        friend_number, file_number, control);
 
+    if (control == TOX_FILE_CONTROL_CANCEL)
+    {
+        cancel_ft_in_list(file_number);
+    }
+    else if (control == TOX_FILE_CONTROL_RESUME)
+    {
+        accepted_ft_in_list(file_number);
+    }
 }
 
 static void file_recv_callback(Tox *tox,
@@ -1444,6 +1760,7 @@ int main(int argc, char *argv[])
 
     list = list_new();
 
+    ft_transferring = 0;
     cleanup_transfer_dir(file_transfer_dir, file_queue_dir);
 
     uint8_t k = 0;
@@ -1507,7 +1824,15 @@ int main(int argc, char *argv[])
         {
             trigger_push();
         }
-        usleep(tox_iteration_interval(toxes[0]));
+        if ((f_online != TOX_CONNECTION_NONE) && (ft_transferring > 0))
+        {
+            // HINT: iterate much faster with active filetransfers
+            usleep(2);
+        }
+        else
+        {
+            usleep(tox_iteration_interval(toxes[0]));
+        }
     }
 
     tox_check_files_thread_stop = 1;
