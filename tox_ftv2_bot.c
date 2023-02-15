@@ -190,8 +190,8 @@ static bool check_file_not_changed(const char *dir_name, const struct dirent *di
 // ------------------------------------------------------------------
 static bool tox_connect(Tox *tox, int num);
 static void tox_update_savedata_file(const Tox *tox, int num);
+static void cleanup_transfer_dir(const char *dir, const char *dir1);
 // function definitions ---------------------------------------------
-
 
 // util functions ---------------------------------------------------
 static void dbg(int level, const char *fmt, ...)
@@ -279,8 +279,10 @@ static void dbg(int level, const char *fmt, ...)
 
 static uint32_t list_items(void)
 {
+    pthread_mutex_lock(&files_lock);
     if (!list)
     {
+        pthread_mutex_unlock(&files_lock);
         return 0;
     }
 
@@ -291,6 +293,7 @@ static uint32_t list_items(void)
         count++;
     }
     list_iterator_destroy(it);
+    pthread_mutex_unlock(&files_lock);
     return count;
 }
 
@@ -624,6 +627,66 @@ static void *notification_thread_func(__attribute__((unused)) void *data)
     pthread_exit(0);
 }
 
+static bool move_file(const char *file_name, const char *src_dir, const char *dst_dir)
+{
+    if (!file_name)
+    {
+        return false;
+    }
+
+    if (!src_dir)
+    {
+        return false;
+    }
+
+    if (!dst_dir)
+    {
+        return false;
+    }
+
+    char *file_name_with_path_src = calloc(1 , (PATH_MAX + 1));
+    if (!file_name_with_path_src)
+    {
+        dbg(0, "error allocating memory\n");
+        return false;
+    }
+
+    char *file_name_with_path_dst = calloc(1 , (PATH_MAX + 1));
+    if (!file_name_with_path_dst)
+    {
+        dbg(0, "error allocating memory\n");
+        free(file_name_with_path_src);
+        return false;
+    }
+
+    int res1 = snprintf(file_name_with_path_src, PATH_MAX, "%s/%s", src_dir, file_name);
+    int res2 = snprintf(file_name_with_path_dst, PATH_MAX, "%s/%s", dst_dir, file_name);
+    if ((res1 < 0) || (res2 < 0))
+    {
+        free(file_name_with_path_src);
+        free(file_name_with_path_dst);
+        return false;
+    }
+
+    int res = rename(file_name_with_path_src, file_name_with_path_dst);
+
+    bool ret = false;
+    if (res != 0)
+    {
+        dbg(0, "moving file to dir failed: src: %s dst: %s\n", file_name_with_path_src, file_name_with_path_dst);
+    }
+    else
+    {
+        dbg(8, "moving file to dir OK: src: %s dst: %s\n", file_name_with_path_src, file_name_with_path_dst);
+        ret = true;
+    }
+
+    free(file_name_with_path_src);
+    free(file_name_with_path_dst);
+
+    return ret;
+}
+
 static void put_file_in_transfer_dir(const char *file_name, const char *queue_dir, const char *transfer_dir)
 {
     if (!file_name)
@@ -703,8 +766,10 @@ static void put_file_in_transfer_dir(const char *file_name, const char *queue_di
                 item->file_name_remote = strndup(file_name, PATH_MAX); // TODO: mask original filename?
                 item->file_size_in_bytes = file_size(file_name_with_path_transfer);
 
+                pthread_mutex_lock(&files_lock);
                 list_node_t *node = list_node_new(item);
                 list_rpush(list, node);
+                pthread_mutex_unlock(&files_lock);
 
                 size_t id_hex_size = (TOX_MSGV3_MSGID_LENGTH * 2) + 1;
                 char id_hex[id_hex_size + 1];
@@ -955,6 +1020,17 @@ static bool check_file_not_changed(const char *dir_name, const struct dirent *di
     }
 
     return false;
+}
+
+static void cleanup_transfer_dir(const char *transfer_dir, const char *queue_dir)
+{
+    char *found_name = find_oldest_file_in_dir(transfer_dir);
+    while (found_name)
+    {
+        bool res = move_file(found_name, transfer_dir, queue_dir);
+        free(found_name);
+        found_name = find_oldest_file_in_dir(transfer_dir);
+    }
 }
 // util functions ---------------------------------------------------
 
@@ -1368,6 +1444,8 @@ int main(int argc, char *argv[])
 
     list = list_new();
 
+    cleanup_transfer_dir(file_transfer_dir, file_queue_dir);
+
     uint8_t k = 0;
     toxes[k] = tox_init(k);
     dbg(8, "[%d]:ID:1: %p\n", k, toxes[k]);
@@ -1421,7 +1499,6 @@ int main(int argc, char *argv[])
     while (main_loop_running)
     {
         do_counters(k);
-        pthread_mutex_lock(&files_lock);
         if (f_online != TOX_CONNECTION_NONE)
         {
             //
@@ -1430,7 +1507,6 @@ int main(int argc, char *argv[])
         {
             trigger_push();
         }
-        pthread_mutex_unlock(&files_lock);
         usleep(tox_iteration_interval(toxes[0]));
     }
 
