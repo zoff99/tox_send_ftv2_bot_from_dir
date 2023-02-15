@@ -77,11 +77,6 @@ static bool main_loop_running;
 #define PROXY_PORT_TOR_DEFAULT 9050
 int use_tor = 0;
 
-int fast_send = 0;
-int number_msgs = 0;
-uint64_t current_msg_prefix_num = 0;
-#define UINT64_MAX_AS_STR_LEN 22
-
 #define SPINS_UP_NUM 1
 int spin = SPINS_UP_NUM;
 uint8_t x = 1;
@@ -110,18 +105,18 @@ long save_counter = save_iters_minus_10;
 const long bootstrap_iters = 30000;
 long bootstrap_counter = 0;
 
-long last_send_msg_timestamp_unix = 0;
-long last_send_msg_timestamp_monotime_ms = -1;
 long last_send_push_timestamp_unix = 0;
 
-struct stringlist
+struct filelist
 {
-    char *s;        // free this one
-    char *msgv3_id; // DO NOT free this one, since it points into "s" above
-    size_t bytes;
+    char *file_name_local;           // filename without path, free this one
+    char *file_name_local_with_path; // filename with path, free this one
+    char *file_name_remote;          // filename to send to remote, free this one
+    uint8_t *file_id;                // free this one
+    size_t file_size_in_bytes;
 };
 list_t *list = NULL;
-#define MAX_FILELIST_ENTRIES 50
+#define MAX_FILELIST_ENTRIES 5
 pthread_mutex_t files_lock;
 
 struct curl_string
@@ -378,6 +373,20 @@ static bool file_exists(const char *path)
     return stat(path, &s) == 0;
 }
 
+static size_t file_size(const char *path)
+{
+    struct stat st;
+    int res = stat(path, &st);
+    if (res != 0)
+    {
+        return (size_t)0;
+    }
+    else
+    {
+        return (size_t)st.st_size;
+    }
+}
+
 static void add_token(const char *token_str)
 {
     if (file_exists(tokenFile))
@@ -615,6 +624,112 @@ static void *notification_thread_func(__attribute__((unused)) void *data)
     pthread_exit(0);
 }
 
+static void put_file_in_transfer_dir(const char *file_name, const char *queue_dir, const char *transfer_dir)
+{
+    if (!file_name)
+    {
+        return;
+    }
+
+    if (!queue_dir)
+    {
+        return;
+    }
+
+    if (!transfer_dir)
+    {
+        return;
+    }
+
+    if (list_items() >= MAX_FILELIST_ENTRIES)
+    {
+        dbg(8, "file list full\n");
+        return;
+    }
+
+    char *file_name_with_path_queue = calloc(1 , (PATH_MAX + 1));
+    if (!file_name_with_path_queue)
+    {
+        dbg(0, "error allocating memory\n");
+        return;
+    }
+
+    char *file_name_with_path_transfer = calloc(1 , (PATH_MAX + 1));
+    if (!file_name_with_path_transfer)
+    {
+        dbg(0, "error allocating memory\n");
+        free(file_name_with_path_queue);
+        return;
+    }
+
+    int res1 = snprintf(file_name_with_path_queue, PATH_MAX, "%s/%s", queue_dir, file_name);
+    int res2 = snprintf(file_name_with_path_transfer, PATH_MAX, "%s/%s", transfer_dir, file_name);
+    if ((res1 < 0) || (res2 < 0))
+    {
+        free(file_name_with_path_queue);
+        free(file_name_with_path_transfer);
+        return;
+    }
+
+    int res = rename(file_name_with_path_queue, file_name_with_path_transfer);
+
+    if (res != 0)
+    {
+        dbg(8, "moving file to transfer dir failed: src: %s dst: %s\n", file_name_with_path_queue, file_name_with_path_transfer);
+    }
+    else
+    {
+        dbg(9, "moving file to transfer dir OK: src: %s dst: %s\n", file_name_with_path_queue, file_name_with_path_transfer);
+
+        struct filelist *item = calloc(1, sizeof(struct filelist));
+        if (item)
+        {
+            item->file_id = calloc(1, TOX_MSGV3_MSGID_LENGTH);
+            if (!item->file_id)
+            {
+                rename(file_name_with_path_transfer, file_name_with_path_queue);
+                dbg(0, "error allocating memory, moving file back: src: %s dst: %s\n",
+                    file_name_with_path_transfer, file_name_with_path_queue);
+                free(item);
+                free(file_name_with_path_queue);
+                free(file_name_with_path_transfer);
+                return;
+            }
+            else
+            {
+                tox_messagev3_get_new_message_id(item->file_id);
+                item->file_name_local = strndup(file_name, PATH_MAX);
+                item->file_name_local_with_path = strndup(file_name_with_path_transfer, PATH_MAX);
+                item->file_name_remote = strndup(file_name, PATH_MAX); // TODO: mask original filename?
+                item->file_size_in_bytes = file_size(file_name_with_path_transfer);
+
+                list_node_t *node = list_node_new(item);
+                list_rpush(list, node);
+
+                size_t id_hex_size = (TOX_MSGV3_MSGID_LENGTH * 2) + 1;
+                char id_hex[id_hex_size + 1];
+                CLEAR(id_hex);
+                bin2upHex((const uint8_t *) item->file_id, TOX_MSGV3_MSGID_LENGTH, id_hex, id_hex_size);
+
+                dbg(8,
+                    "pushed file entry onto the filelist: id: %s size: %lu local: %s localwithpath: %s remote: %s\n",
+                    id_hex,
+                    (unsigned long) item->file_size_in_bytes,
+                    item->file_name_local,
+                    item->file_name_local_with_path,
+                    item->file_name_remote);
+            }
+        }
+        else
+        {
+            dbg(0, "error allocating memory for list item: file: %s\n", file_name);
+        }
+    }
+
+    free(file_name_with_path_queue);
+    free(file_name_with_path_transfer);
+}
+
 static void *thread_check_files(__attribute__((unused)) void *data)
 {
     while (tox_check_files_thread_stop != 1)
@@ -622,11 +737,12 @@ static void *thread_check_files(__attribute__((unused)) void *data)
         char *found_name = find_oldest_file_in_dir(file_queue_dir);
         if (found_name)
         {
-            dbg(9, "found oldest file in queue:%s\n", found_name);
+            dbg(8, "found oldest file in queue:%s\n", found_name);
+            put_file_in_transfer_dir(found_name, file_queue_dir, file_transfer_dir);
             free(found_name);
         }
 
-        yieldcpu(300); // pause for x ms
+        yieldcpu(1000); // pause for x ms
     }
 
     dbg(2, "Tox:check files thread exit!\n");
@@ -649,9 +765,6 @@ static void trigger_push(void)
 static void check_commandline_options(int argc, char *argv[])
 {
     use_tor = 0;
-    fast_send = 0;
-    number_msgs = 0;
-    current_msg_prefix_num = 0;
     int opt;
     const char *short_opt = "Tfhvn";
     struct option long_opt[] =
@@ -671,14 +784,6 @@ static void check_commandline_options(int argc, char *argv[])
 
             case 'T':
                 use_tor = 1;
-                break;
-
-            case 'f':
-                fast_send = 1;
-                break;
-
-            case 'n':
-                number_msgs = 1;
                 break;
 
             case 'v':
@@ -738,6 +843,7 @@ static void check_commandline_options(int argc, char *argv[])
 
 /*
  * Caller must free the returned char buffer!
+ * returns: oldest file name in dir, without path
  */
 static char* find_oldest_file_in_dir(const char* dir_name)
 {
@@ -746,12 +852,13 @@ static char* find_oldest_file_in_dir(const char* dir_name)
         return NULL;
     }
 
-    char *found_file_name = calloc(1 , (FILENAME_MAX + 1));
+    char *found_file_name = calloc(1 , (PATH_MAX + 1));
     if (!found_file_name)
     {
         return NULL;
     }
 
+    bool found_a_file = false;
     time_t mod_timestamp_cur = 0;
     DIR *d;
     struct dirent *dir;
@@ -783,8 +890,9 @@ static char* find_oldest_file_in_dir(const char* dir_name)
                         {
                             dbg(9, "younger file:%s %d %d\n", dir->d_name, mod_timestamp_cur, mod_timestamp, mod_timestamp - mod_timestamp_cur);
                             mod_timestamp_cur = mod_timestamp;
-                            memset(found_file_name, 0, FILENAME_MAX);
-                            snprintf(found_file_name, FILENAME_MAX, "%s", dir->d_name);
+                            memset(found_file_name, 0, PATH_MAX);
+                            snprintf(found_file_name, PATH_MAX, "%s", dir->d_name);
+                            found_a_file = true;
                         }
                         else
                         {
@@ -797,6 +905,12 @@ static char* find_oldest_file_in_dir(const char* dir_name)
         closedir(d);
     }
 
+    if (!found_a_file)
+    {
+        dbg(9, "no file found\n");
+        free(found_file_name);
+        found_file_name = NULL;
+    }
     return found_file_name;
 }
 
@@ -818,9 +932,9 @@ static bool check_file_not_changed(const char *dir_name, const struct dirent *di
     time_t mtime;
     time_t time_now = time(NULL);
 
-    char filename_with_dir[FILENAME_MAX + 1];
+    char filename_with_dir[PATH_MAX + 1];
     CLEAR(filename_with_dir);
-    snprintf(filename_with_dir, FILENAME_MAX, "%s/%s", dir_name, dir->d_name);
+    snprintf(filename_with_dir, PATH_MAX, "%s/%s", dir_name, dir->d_name);
 
     stat(filename_with_dir, &foo);
     mtime = foo.st_mtime;
@@ -1299,7 +1413,7 @@ int main(int argc, char *argv[])
     else
     {
         pthread_setname_np(tid[0], "t_shell");
-        dbg(2, "check fies thread Thread successfully created\n");
+        dbg(2, "check files thread Thread successfully created\n");
     }
 
     main_loop_running = true;
