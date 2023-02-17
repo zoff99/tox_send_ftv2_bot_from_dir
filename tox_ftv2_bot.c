@@ -729,7 +729,7 @@ static void put_file_in_transfer_dir(const char *file_name, const char *queue_di
 
     if (list_items() >= MAX_FILELIST_ENTRIES)
     {
-        dbg(8, "file list full\n");
+        dbg(9, "file list full\n");
         return;
     }
 
@@ -830,7 +830,7 @@ static void *thread_check_files(void *data)
         char *found_name = find_oldest_file_in_dir(file_queue_dir);
         if (found_name)
         {
-            dbg(8, "found oldest file in queue:%s\n", found_name);
+            dbg(9, "found oldest file in queue:%s\n", found_name);
             put_file_in_transfer_dir(found_name, file_queue_dir, file_transfer_dir);
             free(found_name);
         }
