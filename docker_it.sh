@@ -62,7 +62,9 @@ echo "*** compile ***"
 cd /workspace/build/
 set -x
 ls -al /workspace/build/inst_ct/lib/
-gcc -O2 -g -fPIC -I/workspace/build/inst_ct/include \
+gcc -O2 -g -fPIC \
+    -fstack-protector-all \
+    -I/workspace/build/inst_ct/include \
     -L/workspace/build/inst_ct/lib \
     tox_ftv2_bot.c \
     list.c list_iterator.c list_node.c \
