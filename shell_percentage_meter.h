@@ -39,16 +39,22 @@
 extern "C" {
 #endif
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wreserved-identifier"
+
 #define __shell_percentage__CLEAR(x) memset(&(x), 0, sizeof(x))
 
 static char *__shell_percentage__CODE_SAVE_CURSOR = "\033[s";
 static char *__shell_percentage__CODE_RESTORE_CURSOR = "\033[u";
 static char *__shell_percentage__CODE_CURSOR_IN_SCROLL_AREA = "\033[1A";
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wpedantic"
 static char *__shell_percentage__COLOR_FG = "\e[30m";
 static char *__shell_percentage__COLOR_BG = "\e[42m";
 static char *__shell_percentage__COLOR_BG_BLOCKED = "\e[43m";
 static char *__shell_percentage__RESTORE_FG = "\e[39m";
 static char *__shell_percentage__RESTORE_BG = "\e[49m";
+#pragma clang diagnostic pop
 
 static bool __shell_percentage__PROGRESS_BLOCKED = false;
 static int __shell_percentage__CURRENT_NR_LINES = 0;
@@ -279,6 +285,8 @@ static void __shell_percentage__setup_scroll_area(void)
 
     __shell_percentage__draw_progress_bar(0);
 }
+
+#pragma clang diagnostic pop
 
 #ifdef __cplusplus
 }
