@@ -63,7 +63,7 @@ static void __shell_percentage__printf_new(const char c, int count);
 static void __shell_percentage__run_cmd_return_output(const char *command, char *output)
 {
     FILE *fp = NULL;
-    char path[1035];
+    char path[999];
     __shell_percentage__CLEAR(path);
     char *pos = NULL;
 
@@ -84,7 +84,7 @@ static void __shell_percentage__run_cmd_return_output(const char *command, char 
     /* Read the output a line at a time - output it. */
     while (fgets(path, sizeof(path) - 1, fp) != NULL)
     {
-        snprintf(output, 299, "%s", (const char *)path);
+        snprintf(output, 998, "%s", (const char *)path);
     }
 
     if (strlen(output) > 1)
