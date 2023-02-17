@@ -1,4 +1,24 @@
-#define _GNU_SOURCE
+/**
+ * [shell percentage meter]
+ * Copyright (C) 2023 Zoff <zoff@zoff.cc>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * version 2 as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the
+ * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+ * Boston, MA  02110-1301, USA.
+ */
+
+#ifndef C_SHELL_PERCENTAGE_H
+#define C_SHELL_PERCENTAGE_H
 
 #include <ctype.h>
 #include <inttypes.h>
@@ -15,25 +35,30 @@
 
 #include <unistd.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define __shell_percentage__CLEAR(x) memset(&(x), 0, sizeof(x))
 
-// Constants
-static char *CODE_SAVE_CURSOR="\033[s";
-static char *CODE_RESTORE_CURSOR="\033[u";
-static char *CODE_CURSOR_IN_SCROLL_AREA="\033[1A";
-static char *COLOR_FG="\e[30m";
-static char *COLOR_BG="\e[42m";
-static char *COLOR_BG_BLOCKED="\e[43m";
-static char *RESTORE_FG="\e[39m";
-char *RESTORE_BG="\e[49m";
+static char *__shell_percentage__CODE_SAVE_CURSOR = "\033[s";
+static char *__shell_percentage__CODE_RESTORE_CURSOR = "\033[u";
+static char *__shell_percentage__CODE_CURSOR_IN_SCROLL_AREA = "\033[1A";
+static char *__shell_percentage__COLOR_FG = "\e[30m";
+static char *__shell_percentage__COLOR_BG = "\e[42m";
+static char *__shell_percentage__COLOR_BG_BLOCKED = "\e[43m";
+static char *__shell_percentage__RESTORE_FG = "\e[39m";
+static char *__shell_percentage__RESTORE_BG = "\e[49m";
 
-static bool __shell_percentage__PROGRESS_BLOCKED=false;
-static int __shell_percentage__CURRENT_NR_LINES=0;
+static bool __shell_percentage__PROGRESS_BLOCKED = false;
+static int __shell_percentage__CURRENT_NR_LINES = 0;
 #define __shell_percentage__XTERM_VERT_LINES 23
 #define __shell_percentage__XTERM_HOR_COLUMS 79
 
+// function definitions ---------------------------------------------
 static void __shell_percentage__setup_scroll_area(void);
-static void __shell_percentage__printf_new(char c, int count);
+static void __shell_percentage__printf_new(const char c, int count);
+// function definitions ---------------------------------------------
 
 static void __shell_percentage__run_cmd_return_output(const char *command, char *output)
 {
@@ -74,6 +99,11 @@ static void __shell_percentage__run_cmd_return_output(const char *command, char 
     pclose(fp);
 }
 
+static void __shell_percentage__tput_el(void)
+{
+    if (system("tput el")) {}
+}
+
 static int __shell_percentage__tput_lines(void)
 {
     char output_str[1000];
@@ -82,6 +112,14 @@ static int __shell_percentage__tput_lines(void)
     if (strlen(output_str) > 0)
     {
         int lines = (int)(strtol(output_str, NULL, 10));
+        if (lines < 3)
+        {
+            lines = 3;
+        }
+        if (lines > 400)
+        {
+            lines = 400;
+        }
         return lines;
     }
     
@@ -96,6 +134,14 @@ static int __shell_percentage__tput_cols(void)
     if (strlen(output_str) > 0)
     {
         int cols = (int)(strtol(output_str, NULL, 10));
+        if (cols < 3)
+        {
+            cols = 3;
+        }
+        if (cols > 400)
+        {
+            cols = 400;
+        }
         return cols;
     }
     
@@ -105,20 +151,20 @@ static int __shell_percentage__tput_cols(void)
 static void __shell_percentage__clear_progress_bar(void)
 {
     int lines = __shell_percentage__tput_lines();
-    printf("%s", CODE_SAVE_CURSOR);
+    printf("%s", __shell_percentage__CODE_SAVE_CURSOR);
     printf("\033[%d;0f", lines);
-    if (system("tput el")) {}
-    printf("%s", CODE_RESTORE_CURSOR);
+    __shell_percentage__tput_el();
+    printf("%s", __shell_percentage__CODE_RESTORE_CURSOR);
 }
 
 static void __shell_percentage__destroy_scroll_area(void)
 {
     int lines = __shell_percentage__tput_lines();
-    printf("%s", CODE_SAVE_CURSOR);
+    printf("%s", __shell_percentage__CODE_SAVE_CURSOR);
     printf("\033[0;%dr", lines);
 
-    printf("%s", CODE_RESTORE_CURSOR);
-    printf("%s", CODE_CURSOR_IN_SCROLL_AREA);
+    printf("%s", __shell_percentage__CODE_RESTORE_CURSOR);
+    printf("%s", __shell_percentage__CODE_CURSOR_IN_SCROLL_AREA);
     
     __shell_percentage__clear_progress_bar();
     printf("\n");
@@ -127,32 +173,64 @@ static void __shell_percentage__destroy_scroll_area(void)
 
 static void __shell_percentage__print_bar_text(int percentage)
 {
+    if (percentage < 0)
+    {
+        percentage = 0;
+    }
+
+    if (percentage > 100)
+    {
+        percentage = 100;
+    }
+
     int cols = __shell_percentage__tput_cols();
     int bar_size = cols - 17;
+    if (bar_size < 4)
+    {
+        bar_size = 4;
+    }
     int complete_size = (bar_size * percentage) / 100;
     int remainder_size = bar_size - complete_size;
 
     printf(" Progress ");
+    if (percentage < 10)
+    {
+        printf(" ");
+    }
+    if (percentage < 100)
+    {
+        printf(" ");
+    }
     printf("%d%%", percentage);
     printf(" ");
 
     printf("[");
     if (__shell_percentage__PROGRESS_BLOCKED)
     {
-        printf("%s%s", COLOR_FG, COLOR_BG_BLOCKED);
+        printf("%s%s", __shell_percentage__COLOR_FG, __shell_percentage__COLOR_BG_BLOCKED);
     }
     else
     {
-        printf("%s%s", COLOR_FG, COLOR_BG);
+        printf("%s%s", __shell_percentage__COLOR_FG, __shell_percentage__COLOR_BG);
     }
     __shell_percentage__printf_new('#', complete_size);
-    printf("%s%s", RESTORE_FG, RESTORE_BG);
+    printf("%s%s", __shell_percentage__RESTORE_FG, __shell_percentage__RESTORE_BG);
     __shell_percentage__printf_new('.', remainder_size);
     printf("]");
 }
 
-static void __shell_percentage__printf_new(char c, int count)
+static void __shell_percentage__printf_new(const char c, int count)
 {
+    if (count < 1)
+    {
+        return;
+    }
+
+    if (count > 400)
+    {
+        count = 400;
+    }
+
     for (int i = 0; i < count; i ++)
     {
         printf("%c", c);
@@ -161,17 +239,27 @@ static void __shell_percentage__printf_new(char c, int count)
 
 static void __shell_percentage__draw_progress_bar(int percentage)
 {
+    if (percentage < 0)
+    {
+        percentage = 0;
+    }
+
+    if (percentage > 100)
+    {
+        percentage = 100;
+    }
+
     int lines = __shell_percentage__tput_lines();
     if (lines != __shell_percentage__CURRENT_NR_LINES)
     {
         __shell_percentage__setup_scroll_area();
     }
-    printf("%s", CODE_SAVE_CURSOR);
+    printf("%s", __shell_percentage__CODE_SAVE_CURSOR);
     printf("\033[%d;0f", lines);
-    if (system("tput el")) {}
-    __shell_percentage__PROGRESS_BLOCKED=false;
+    __shell_percentage__tput_el();
+    __shell_percentage__PROGRESS_BLOCKED = false;
     __shell_percentage__print_bar_text(percentage);
-    printf("%s", CODE_RESTORE_CURSOR);
+    printf("%s", __shell_percentage__CODE_RESTORE_CURSOR);
 }
 
 static void __shell_percentage__setup_scroll_area(void)
@@ -180,13 +268,17 @@ static void __shell_percentage__setup_scroll_area(void)
     __shell_percentage__CURRENT_NR_LINES = lines;
     lines--;
     printf("\n");
-    printf("%s", CODE_SAVE_CURSOR);
+    printf("%s", __shell_percentage__CODE_SAVE_CURSOR);
     printf("\033[0;%dr", lines);
 
-    printf("%s", CODE_RESTORE_CURSOR);
-    printf("%s", CODE_CURSOR_IN_SCROLL_AREA);
+    printf("%s", __shell_percentage__CODE_RESTORE_CURSOR);
+    printf("%s", __shell_percentage__CODE_CURSOR_IN_SCROLL_AREA);
 
     __shell_percentage__draw_progress_bar(0);
 }
 
+#ifdef __cplusplus
+}
+#endif
 
+#endif // C_SHELL_PERCENTAGE_H
