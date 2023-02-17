@@ -36,6 +36,7 @@ for system_to_build_for in $build_for ; do
     rsync -a ./list_iterator.c --exclude=.localrun $_HOME_/"$system_to_build_for"/workspace/build/
     rsync -a ./list_node.c --exclude=.localrun $_HOME_/"$system_to_build_for"/workspace/build/
     rsync -a ./list.h --exclude=.localrun $_HOME_/"$system_to_build_for"/workspace/build/
+    rsync -a ./shell_percentage_meter.h --exclude=.localrun $_HOME_/"$system_to_build_for"/workspace/build/
     chmod a+rwx -R $_HOME_/"$system_to_build_for"/workspace/build >/dev/null 2>/dev/null
 
     echo '#! /bin/bash

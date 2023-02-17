@@ -78,6 +78,7 @@ FILE *logfile = NULL;
 static bool main_loop_running;
 #define PROXY_PORT_TOR_DEFAULT 9050
 int use_tor = 0;
+int shell_progress_bar = 0;
 
 #define SPINS_UP_NUM 1
 int spin = SPINS_UP_NUM;
@@ -123,6 +124,7 @@ static list_t *list = NULL;
 #define MAX_FILELIST_ENTRIES 5
 static pthread_mutex_t files_lock;
 uint32_t ft_transferring = 0;
+static int global_ft_percent_finished_last = -1;
 
 struct curl_string
 {
@@ -209,6 +211,10 @@ static bool tox_connect(Tox *tox, int num);
 static void tox_update_savedata_file(const Tox *tox, int num);
 static int64_t tox_start_a_filetransfer(Tox *tox, size_t f_size_bytes, const uint8_t *file_id, const char *filename);
 // function definitions ---------------------------------------------
+
+
+#include "shell_percentage_meter.h"
+
 
 // util functions ---------------------------------------------------
 static void dbg(int level, const char *fmt, ...)
@@ -915,6 +921,12 @@ static void *thread_check_files(void *data)
                         {
                             ft_transferring = 0;
                         }
+                        if (shell_progress_bar)
+                        {
+                            __shell_percentage__destroy_scroll_area();
+                            dbg(8, "\n");
+                        }
+
                         dbg(8, "set ft_transferring [--]: %d\n", ft_transferring);
                         if (!res)
                         {
@@ -998,6 +1010,11 @@ static void cancel_ft_in_list(uint32_t file_number)
                     {
                         ft_transferring = 0;
                     }
+                    if (shell_progress_bar)
+                    {
+                        __shell_percentage__destroy_scroll_area();
+                        dbg(8, "\n");
+                    }
                     dbg(8, "set ft_transferring [--]: %d\n", ft_transferring);
                 }
                 dbg(8, "found ftnum in list: %ld setting status to FT_STATUS_CANCELED\n", ft_num);
@@ -1026,8 +1043,9 @@ static void trigger_push(void)
 static void check_commandline_options(int argc, char *argv[])
 {
     use_tor = 0;
+    shell_progress_bar = 0;
     int opt;
-    const char *short_opt = "Tfhvn";
+    const char *short_opt = "Tfhvnp";
     struct option long_opt[] =
             {
                     {"help", no_argument, NULL, 'h'},
@@ -1047,6 +1065,10 @@ static void check_commandline_options(int argc, char *argv[])
                 use_tor = 1;
                 break;
 
+            case 'p':
+                shell_progress_bar = 1;
+                break;
+
             case 'v':
                 printf("Tox send ftv2 Bot version: %s\n", global_version_string);
 
@@ -1063,6 +1085,7 @@ static void check_commandline_options(int argc, char *argv[])
                 printf("  -T,                                  use TOR as Relay\n");
                 printf("  -f,                                  send messages without delay\n");
                 printf("  -n,                                  prefix each message with a number\n");
+                printf("  -p,                                  !!DANGEROUS!! show progressbar in terminal\n");
                 printf("  -v, --version                        show version\n");
                 printf("  -h, --help                           print this help and exit\n");
                 printf("\n");
@@ -1582,12 +1605,22 @@ static void file_chunk_request_callback(Tox *tox,
                     dbg(8, "found ftnum in list: %ld setting status to FT_STATUS_TRANSFERRING\n", ft_num);
                     ((struct filelist *) (node->val))->status = FT_STATUS_TRANSFERRING;
                     ft_transferring++;
+                    if (shell_progress_bar)
+                    {
+                        __shell_percentage__destroy_scroll_area();
+                        dbg(8, "\n");
+                        __shell_percentage__setup_scroll_area();
+                    }
                     dbg(8, "set ft_transferring [++]: %d\n", ft_transferring);
                 }
 
                 // ----------- check for ft finished -----------
                 if ((position == ft_in_size_bytes) && (length == 0))
                 {
+                    if (shell_progress_bar)
+                    {
+                        __shell_percentage__draw_progress_bar(100);
+                    }
                     dbg(8, "filetransfer has finished: ftnum: %d file: %s\n", ft_num, ft_name_local);
                     ((struct filelist *) (node->val))->status = FT_STATUS_FINISHED;
                     list_iterator_destroy(it);
@@ -1639,6 +1672,25 @@ static void file_chunk_request_callback(Tox *tox,
                 }
                 free(data);
                 fclose(file_to_send);
+
+                if (shell_progress_bar)
+                {
+                    if (position <= 0)
+                    {
+                        __shell_percentage__draw_progress_bar(0);
+                        // printf(".");
+                    }
+                    else
+                    {
+                        int percent_finished = (int)(100.0f / ((float)ft_in_size_bytes / (float)position));
+                        if (percent_finished != global_ft_percent_finished_last)
+                        {
+                            global_ft_percent_finished_last = percent_finished;
+                            __shell_percentage__draw_progress_bar(percent_finished);
+                            // printf(".");
+                        }
+                    }
+                }
             }
             node = list_iterator_next(it);
         }
@@ -1736,6 +1788,11 @@ int main(int argc, char *argv[])
     setvbuf(logfile, NULL, _IOLBF, 0);
 
     check_commandline_options(argc, argv);
+
+    if (shell_progress_bar)
+    {
+        setvbuf(logfile, NULL, _IONBF, 0);
+    }
 
     dbg(2, "--start--\n");
     dbg(2, "Tox send ftv2 Bot version: %s\n", global_version_string);
@@ -1842,6 +1899,14 @@ int main(int argc, char *argv[])
 
     tox_kill(toxes[k]);
     list_destroy(list);
+
+    if (shell_progress_bar)
+    {
+        // HINT: cleanup where the progressbar was
+        __shell_percentage__destroy_scroll_area();
+        printf("\n\n");
+    }
+
     fclose(logfile);
 
     return 0;
