@@ -84,7 +84,10 @@ static void __shell_percentage__run_cmd_return_output(const char *command, char 
     /* Read the output a line at a time - output it. */
     while (fgets(path, sizeof(path) - 1, fp) != NULL)
     {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
         snprintf(output, 998, "%s", (const char *)path);
+#pragma GCC diagnostic pop
     }
 
     if (strlen(output) > 1)
