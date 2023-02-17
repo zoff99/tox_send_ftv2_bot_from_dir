@@ -83,7 +83,10 @@ int shell_progress_bar = 0;
 #define SPINS_UP_NUM 1
 int spin = SPINS_UP_NUM;
 uint8_t x = 1;
+#pragma clang diagnostic push
+#pragma ide diagnostic ignored "OCDFAInspection"
 struct Tox *toxes[SPINS_UP_NUM];
+#pragma clang diagnostic pop
 static int tox_check_files_thread_stop = 0;
 static int f_online = TOX_CONNECTION_NONE;
 static int self_online = TOX_CONNECTION_NONE;
