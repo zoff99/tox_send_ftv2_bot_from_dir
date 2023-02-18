@@ -128,6 +128,7 @@ static list_t *list = NULL;
 static pthread_mutex_t files_lock;
 uint32_t ft_transferring = 0;
 static int global_ft_percent_finished_last = -1;
+static char *shell_RESTORE_FG_CTRL_SEQ = "\e[39m";
 
 struct curl_string
 {
@@ -321,6 +322,40 @@ static uint32_t list_items(void)
     list_iterator_destroy(it);
     pthread_mutex_unlock(&files_lock);
     return count;
+}
+
+static void list_free_mem_in_items(void)
+{
+    pthread_mutex_lock(&files_lock);
+    if (!list)
+    {
+        pthread_mutex_unlock(&files_lock);
+        return;
+    }
+
+    list_iterator_t *it = list_iterator_new(list, LIST_HEAD);
+    list_node_t *node = list_iterator_next(it);
+    while (node)
+    {
+        struct filelist *sl = (struct filelist *)(node->val);
+
+        free(((struct filelist *) (node->val))->file_name_local);
+        free(((struct filelist *) (node->val))->file_name_local_with_path);
+        free(((struct filelist *) (node->val))->file_name_remote);
+        free(((struct filelist *) (node->val))->file_id);
+
+        ((struct filelist *) (node->val))->file_name_local = NULL;
+        ((struct filelist *) (node->val))->file_name_local_with_path = NULL;
+        ((struct filelist *) (node->val))->file_name_remote = NULL;
+        ((struct filelist *) (node->val))->file_id = NULL;
+
+        free(node->val);
+        node->val = NULL;
+
+        node = list_iterator_next(it);
+    }
+    list_iterator_destroy(it);
+    pthread_mutex_unlock(&files_lock);
 }
 
 static void hex_string_to_bin2(const char *hex_string, uint8_t *output)
@@ -939,6 +974,7 @@ static void *thread_check_files(void *data)
                         free(((struct filelist *) (node->val))->file_name_local);
                         free(((struct filelist *) (node->val))->file_name_local_with_path);
                         free(((struct filelist *) (node->val))->file_name_remote);
+                        free(node->val);
                         list_remove(list, node);
                     }
                 }
@@ -1048,7 +1084,7 @@ static void check_commandline_options(int argc, char *argv[])
     use_tor = 0;
     shell_progress_bar = 0;
     int opt;
-    const char *short_opt = "Tfhvnp";
+    const char *short_opt = "Thvp";
     struct option long_opt[] =
             {
                     {"help", no_argument, NULL, 'h'},
@@ -1086,8 +1122,8 @@ static void check_commandline_options(int argc, char *argv[])
             case 'h':
                 printf("Usage: %s [OPTIONS]\n", argv[0]);
                 printf("  -T,                                  use TOR as Relay\n");
-                printf("  -f,                                  send messages without delay\n");
-                printf("  -n,                                  prefix each message with a number\n");
+                // TODO: implement option
+                // printf("  -n,                                  prefix each filename with a number\n");
                 printf("  -p,                                  !!DANGEROUS!! show progressbar in terminal\n");
                 printf("  -v, --version                        show version\n");
                 printf("  -h, --help                           print this help and exit\n");
@@ -1372,12 +1408,13 @@ static Tox *tox_init(int num)
     FILE *f = NULL;
     f = fopen(savedata_filename1, "rb");
 
+    uint8_t *savedata = NULL;
     if (f)
     {
         fseek(f, 0, SEEK_END);
         long fsize = ftell(f);
         fseek(f, 0, SEEK_SET);
-        uint8_t *savedata = calloc(1, fsize);
+        savedata = calloc(1, fsize);
         size_t dummy = fread(savedata, fsize, 1, f);
 
         if (dummy < 1)
@@ -1395,6 +1432,7 @@ static Tox *tox_init(int num)
 
     tox = tox_new(&options, NULL);
     free(savedata_filename1);
+    free(savedata);
     return tox;
 }
 
@@ -1563,6 +1601,11 @@ static void friend_lossless_packet_callback(__attribute__((unused)) Tox *tox,
     if (data[0] == CONTROL_PROXY_MESSAGE_TYPE_PUSH_URL_FOR_FRIEND)
     {
         dbg(2, "received CONTROL_PROXY_MESSAGE_TYPE_NOTIFICATION_TOKEN message\n");
+        if (NOTIFICATION__device_token)
+        {
+            free(NOTIFICATION__device_token);
+            NOTIFICATION__device_token = NULL;
+        }
         NOTIFICATION__device_token = calloc(1, (length + 1));
         memcpy(NOTIFICATION__device_token, (data + 1), (length - 1));
         dbg(2, "CONTROL_PROXY_MESSAGE_TYPE_NOTIFICATION_TOKEN: %s\n", NOTIFICATION__device_token);
@@ -1681,7 +1724,9 @@ static void file_chunk_request_callback(Tox *tox,
                     if (position <= 0)
                     {
                         __shell_percentage__draw_progress_bar(0);
-                        // printf(".");
+                        setvbuf(logfile, NULL, _IONBF, 0);
+                        printf("%s", shell_RESTORE_FG_CTRL_SEQ);
+                        setvbuf(logfile, NULL, _IOLBF, 0);
                     }
                     else
                     {
@@ -1690,7 +1735,9 @@ static void file_chunk_request_callback(Tox *tox,
                         {
                             global_ft_percent_finished_last = percent_finished;
                             __shell_percentage__draw_progress_bar(percent_finished);
-                            // printf(".");
+                            setvbuf(logfile, NULL, _IONBF, 0);
+                            printf("%s", shell_RESTORE_FG_CTRL_SEQ);
+                            setvbuf(logfile, NULL, _IOLBF, 0);
                         }
                     }
                 }
@@ -1791,11 +1838,6 @@ int main(int argc, char *argv[])
     setvbuf(logfile, NULL, _IOLBF, 0);
 
     check_commandline_options(argc, argv);
-
-    if (shell_progress_bar)
-    {
-        setvbuf(logfile, NULL, _IONBF, 0);
-    }
 
     dbg(2, "--start--\n");
     dbg(2, "Tox send ftv2 Bot version: %s\n", global_version_string);
@@ -1901,6 +1943,7 @@ int main(int argc, char *argv[])
     pthread_join(notification_thread, NULL);
 
     tox_kill(toxes[k]);
+    list_free_mem_in_items();
     list_destroy(list);
 
     if (shell_progress_bar)
@@ -1910,6 +1953,8 @@ int main(int argc, char *argv[])
         printf("\n\n");
     }
 
+    free(NOTIFICATION__device_token);
+    pthread_mutex_destroy(&files_lock);
     fclose(logfile);
 
     return 0;
