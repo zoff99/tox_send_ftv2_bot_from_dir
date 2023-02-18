@@ -128,7 +128,10 @@ static list_t *list = NULL;
 static pthread_mutex_t files_lock;
 uint32_t ft_transferring = 0;
 static int global_ft_percent_finished_last = -1;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wpedantic"
 static char *shell_RESTORE_FG_CTRL_SEQ = "\e[39m";
+#pragma clang diagnostic pop
 
 struct curl_string
 {
