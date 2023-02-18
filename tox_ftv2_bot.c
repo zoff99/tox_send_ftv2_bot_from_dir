@@ -67,8 +67,8 @@
 // ----------- version -----------
 #define VERSION_MAJOR 0
 #define VERSION_MINOR 99
-#define VERSION_PATCH 1
-static const char global_version_string[] = "0.99.1";
+#define VERSION_PATCH 2
+static const char global_version_string[] = "0.99.2";
 // ----------- version -----------
 // ----------- version -----------
 
@@ -1665,7 +1665,7 @@ static void file_chunk_request_callback(Tox *tox,
                 {
                     if (shell_progress_bar)
                     {
-                        __shell_percentage__draw_progress_bar(100);
+                        __shell_percentage__draw_progress_bar(100, (f_online == TOX_CONNECTION_TCP));
                     }
                     dbg(8, "filetransfer has finished: ftnum: %d file: %s\n", ft_num, ft_name_local);
                     ((struct filelist *) (node->val))->status = FT_STATUS_FINISHED;
@@ -1723,7 +1723,7 @@ static void file_chunk_request_callback(Tox *tox,
                 {
                     if (position <= 0)
                     {
-                        __shell_percentage__draw_progress_bar(0);
+                        __shell_percentage__draw_progress_bar(0, (f_online == TOX_CONNECTION_TCP));
                         setvbuf(logfile, NULL, _IONBF, 0);
                         printf("%s", shell_RESTORE_FG_CTRL_SEQ);
                         setvbuf(logfile, NULL, _IOLBF, 0);
@@ -1733,8 +1733,9 @@ static void file_chunk_request_callback(Tox *tox,
                         int percent_finished = (int)(100.0f / ((float)ft_in_size_bytes / (float)position));
                         if (percent_finished != global_ft_percent_finished_last)
                         {
+                            dbg(9, "pecent transferred: %d%% prev: %d%%\n", percent_finished, global_ft_percent_finished_last);
                             global_ft_percent_finished_last = percent_finished;
-                            __shell_percentage__draw_progress_bar(percent_finished);
+                            __shell_percentage__draw_progress_bar(percent_finished, (f_online == TOX_CONNECTION_TCP));
                             setvbuf(logfile, NULL, _IONBF, 0);
                             printf("%s", shell_RESTORE_FG_CTRL_SEQ);
                             setvbuf(logfile, NULL, _IOLBF, 0);
