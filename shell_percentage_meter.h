@@ -246,7 +246,7 @@ static void __shell_percentage__printf_new(const char c, int count)
     }
 }
 
-static void __shell_percentage__draw_progress_bar(int percentage)
+static void __shell_percentage__draw_progress_bar(int percentage, bool blocked)
 {
     if (percentage < 0)
     {
@@ -266,7 +266,7 @@ static void __shell_percentage__draw_progress_bar(int percentage)
     printf("%s", __shell_percentage__CODE_SAVE_CURSOR);
     printf("\033[%d;0f", lines);
     __shell_percentage__tput_el();
-    __shell_percentage__PROGRESS_BLOCKED = false;
+    __shell_percentage__PROGRESS_BLOCKED = blocked;
     __shell_percentage__print_bar_text(percentage);
     printf("%s", __shell_percentage__CODE_RESTORE_CURSOR);
 }
@@ -283,7 +283,7 @@ static void __shell_percentage__setup_scroll_area(void)
     printf("%s", __shell_percentage__CODE_RESTORE_CURSOR);
     printf("%s", __shell_percentage__CODE_CURSOR_IN_SCROLL_AREA);
 
-    __shell_percentage__draw_progress_bar(0);
+    __shell_percentage__draw_progress_bar(0, false);
 }
 
 #pragma clang diagnostic pop
