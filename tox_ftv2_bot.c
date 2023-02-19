@@ -73,32 +73,34 @@ static const char global_version_string[] = "0.99.2";
 // ----------- version -----------
 
 #define CURRENT_LOG_LEVEL 8 // 0 -> error, 1 -> warn, 2 -> info, 8 -> debug, 9 -> trace
-FILE *logfile = NULL;
+static FILE *logfile = NULL;
 
 static bool main_loop_running;
 #define PROXY_PORT_TOR_DEFAULT 9050
-int use_tor = 0;
-int shell_progress_bar = 0;
+static int use_tor = 0;
+static int shell_progress_bar = 0;
 
 #define SPINS_UP_NUM 1
-int spin = SPINS_UP_NUM;
-uint8_t x = 1;
+static int spin = SPINS_UP_NUM;
+static uint8_t x = 1;
 #pragma clang diagnostic push
 #pragma ide diagnostic ignored "OCDFAInspection"
-struct Tox *toxes[SPINS_UP_NUM];
+static struct Tox *toxes[SPINS_UP_NUM];
 #pragma clang diagnostic pop
 static int tox_check_files_thread_stop = 0;
 static int f_online = TOX_CONNECTION_NONE;
 static int self_online = TOX_CONNECTION_NONE;
 
-const char *file_queue_dir = "./queue/";
-const char *file_transfer_dir = "./transfer/";
-const char *file_done_dir = "./done/";
+static const char *file_queue_dir = "./queue/";
+static const char *file_transfer_dir = "./transfer/";
+static const char *file_done_dir = "./done/";
+
+static const char *tox_name_filename = "toxname.txt";
 
 static const char *tokenFile = "./token.txt";
 static char *NOTIFICATION__device_token = NULL;
 static const char *NOTIFICATION_TOKEN_PREFIX = "https://";
-pthread_t notification_thread;
+static pthread_t notification_thread;
 static int notification_thread_stop = 1;
 static int need_send_notification = 0;
 #define SEND_PUSH_TRIED_FOR_1_MESSAGE_MAX 50
@@ -126,7 +128,7 @@ struct filelist
 static list_t *list = NULL;
 #define MAX_FILELIST_ENTRIES 5
 static pthread_mutex_t files_lock;
-uint32_t ft_transferring = 0;
+static uint32_t ft_transferring = 0;
 static int global_ft_percent_finished_last = -1;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wpedantic"
@@ -1473,6 +1475,94 @@ static bool tox_connect(Tox *tox, int num)
     return true;
 }
 
+static void reload_name_from_file(Tox *tox)
+{
+    // TODO: this is a potentially dangerous function. please check it more!!
+    FILE *file;
+    file = fopen(tox_name_filename, "r");
+    char *line = NULL;
+    size_t len = 0;
+    ssize_t read;
+
+    if (file)
+    {
+        while ((read = getline(&line, &len, file)) != -1)
+        {
+            if (line)
+            {
+                if (read > 1)
+                {
+                    if (line[read] == '\r')
+                    {
+                        line[read] = '\0';
+                    }
+                    if (line[read] == '\n')
+                    {
+                        line[read] = '\0';
+                    }
+                    if (line[read - 1] == '\r')
+                    {
+                        line[read - 1] = '\0';
+                    }
+                    if (line[read - 1] == '\n')
+                    {
+                        line[read - 1] = '\0';
+                    }
+                }
+
+                if (strlen(line) > 0)
+                {
+                    // set our name to read string
+                    uint32_t self_name_max_len = tox_max_name_length();
+                    char self_name[1000];
+                    CLEAR(self_name);
+                    snprintf(self_name, (self_name_max_len - 1), "%s", line);
+
+                    for (size_t i = 0; i < strlen(self_name); i++)
+                    {
+                        if (
+                            (self_name[i] >= '0' && self_name[i] <= '9')
+                            ||
+                            (self_name[i] >= 'a' && self_name[i] <= 'z')
+                            ||
+                            (self_name[i] >= 'A' && self_name[i] <= 'Z')
+                            ||
+                            (self_name[i] == '_')
+                            ||
+                            (self_name[i] == '-')
+                            ||
+                            (self_name[i] == ' ')
+                            ||
+                            (self_name[i] == '!')
+                            ||
+                            (self_name[i] == '?')
+                            ||
+                            (self_name[i] == '+')
+                            ||
+                            (self_name[i] == '#')
+                        )
+                        {
+                            // ok, allowed character
+                        }
+                        else
+                        {
+                            // we don't allow this character in imported names
+                            self_name[i] = '_';
+                        }
+                    }
+                    dbg(2, "setting new name to:%s\n", (uint8_t *)self_name);
+                    tox_self_set_name(tox, (uint8_t *)self_name, strlen(self_name), NULL);
+                    tox_update_savedata_file(tox, 0);
+                }
+                free(line);
+                line = NULL;
+                break;
+            }
+        }
+        fclose(file);
+    }
+}
+
 static void self_connection_change_callback(__attribute__((unused)) Tox *tox,
                                             TOX_CONNECTION status, void *userdata)
 {
@@ -1873,8 +1963,12 @@ int main(int argc, char *argv[])
     toxes[k] = tox_init(k);
     dbg(8, "[%d]:ID:1: %p\n", k, toxes[k]);
 
-    const char *name = "Tox File Bot";
-    tox_self_set_name(toxes[k], (const uint8_t *)name, strlen(name), NULL);
+    reload_name_from_file(toxes[k]);
+    if (tox_self_get_name_size(toxes[k]) == 0)
+    {
+        const char *name = "Tox File Bot";
+        tox_self_set_name(toxes[k], (const uint8_t *)name, strlen(name), NULL);
+    }
 
     const char *status_message = "Sends you new files";
     tox_self_set_status_message(toxes[k], (const uint8_t *)status_message,
