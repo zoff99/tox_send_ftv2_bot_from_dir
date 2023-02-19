@@ -1370,7 +1370,7 @@ static Tox *tox_init(int num)
     tox_options_default(&options);
 
     // ----- set options ------
-    options.ipv6_enabled = false;
+    options.ipv6_enabled = true;
     options.local_discovery_enabled = true;
     options.hole_punching_enabled = true;
     // options.udp_enabled = true;
@@ -1873,10 +1873,10 @@ int main(int argc, char *argv[])
     toxes[k] = tox_init(k);
     dbg(8, "[%d]:ID:1: %p\n", k, toxes[k]);
 
-    const char *name = "Tox Command Ping";
+    const char *name = "Tox File Bot";
     tox_self_set_name(toxes[k], (const uint8_t *)name, strlen(name), NULL);
 
-    const char *status_message = "Pings you on new output";
+    const char *status_message = "Sends you new files";
     tox_self_set_status_message(toxes[k], (const uint8_t *)status_message,
                                 strlen(status_message), NULL);
 
