@@ -67,8 +67,8 @@
 // ----------- version -----------
 #define VERSION_MAJOR 0
 #define VERSION_MINOR 99
-#define VERSION_PATCH 2
-static const char global_version_string[] = "0.99.2";
+#define VERSION_PATCH 3
+static const char global_version_string[] = "0.99.3";
 // ----------- version -----------
 // ----------- version -----------
 
@@ -109,7 +109,7 @@ static int send_notification_counter = SEND_PUSH_TRIED_FOR_1_MESSAGE_MAX;
 #define save_iters 800000
 #define save_iters_minus_10 (800000 - 10)
 static long save_counter = save_iters_minus_10;
-static const long bootstrap_iters = 30000;
+static const long bootstrap_iters = 600000; // approx. 60 seconds
 static long bootstrap_counter = 0;
 
 static long last_send_push_timestamp_unix = 0;
@@ -129,6 +129,7 @@ static list_t *list = NULL;
 #define MAX_FILELIST_ENTRIES 5
 static pthread_mutex_t files_lock;
 static uint32_t ft_transferring = 0;
+static int sleeping = 0;
 static int global_ft_percent_finished_last = -1;
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wpedantic"
@@ -211,7 +212,7 @@ struct Node
 // function definitions ---------------------------------------------
 static void ping_push_service(void);
 static void trigger_push(void);
-static void do_counters(uint8_t k);
+static void do_counters_and_tox_iterate(uint8_t k);
 static char* find_oldest_file_in_dir(const char* dir_name);
 static bool check_file_not_changed(const char *dir_name, const struct dirent *dir, time_t *mod_timestamp);
 static void cleanup_transfer_dir(const char *transfer_dir, const char *queue_dir);
@@ -560,10 +561,26 @@ static void ping_push_service(void)
     need_send_notification = 1;
 }
 
-static void do_counters(uint8_t k)
+static void do_counters_and_tox_iterate(uint8_t k)
 {
     save_counter++;
-    tox_iterate(toxes[k], &x);
+    if ((list_items() > 0) || (ft_transferring > 0))
+    {
+        if (sleeping == 1)
+        {
+            sleeping = 0;
+            dbg(2, "*********===> waking up from sleep\n");
+        }
+        tox_iterate(toxes[k], &x);
+    }
+    else
+    {
+        if (sleeping == 0)
+        {
+            sleeping = 1;
+            dbg(2, "goint to sleep *********===> Zzzzzzzz\n");
+        }
+    }
 
     if (self_online == TOX_CONNECTION_NONE)
     {
@@ -1959,6 +1976,7 @@ int main(int argc, char *argv[])
     ft_transferring = 0;
     cleanup_transfer_dir(file_transfer_dir, file_queue_dir);
 
+    sleeping = 0;
     uint8_t k = 0;
     toxes[k] = tox_init(k);
     dbg(8, "[%d]:ID:1: %p\n", k, toxes[k]);
@@ -2015,7 +2033,7 @@ int main(int argc, char *argv[])
     signal(SIGINT, INThandler);
     while (main_loop_running)
     {
-        do_counters(k);
+        do_counters_and_tox_iterate(k);
         if (f_online != TOX_CONNECTION_NONE)
         {
             //
