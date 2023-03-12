@@ -41,7 +41,7 @@ jobs:
       run: gcc -O2 -g -fPIC -fstack-protector-all -I/workspace/build/inst_ct/include -L/workspace/build/inst_ct/lib tox_ftv2_bot.c list.c list_iterator.c list_node.c $(pkg-config --cflags --libs toxcore) -lsodium -lpthread $(pkg-config --cflags --libs libcurl) -o tox_ftv2_bot
 
     - name: check build
-      run: ldd tox_ftv2_bot ; ls -al tox_ftv2_bot
+      run: export LD_LIBRARY_PATH=/usr/local/lib ; ldd tox_ftv2_bot ; ls -al tox_ftv2_bot
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v2
