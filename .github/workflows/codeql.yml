@@ -35,10 +35,10 @@ jobs:
       run: git clone https://github.com/zoff99/c-toxcore ; cd ./c-toxcore/ ; cmake . ; make ; sudo make install
 
     - name: check deps
-      run: pkg-config --cflags --libs toxcore
+      run: pkg-config --cflags --libs toxcore ; pkg-config --cflags --libs libcurl
 
     - name: build
-      run: gcc -O2 -g -fPIC -fstack-protector-all -I/workspace/build/inst_ct/include -L/workspace/build/inst_ct/lib tox_ftv2_bot.c list.c list_iterator.c list_node.c $(pkg-config --cflags --libs toxcore) -lsodium -lpthread -lcurl -o tox_ftv2_bot
+      run: gcc -O2 -g -fPIC -fstack-protector-all -I/workspace/build/inst_ct/include -L/workspace/build/inst_ct/lib tox_ftv2_bot.c list.c list_iterator.c list_node.c $(pkg-config --cflags --libs toxcore) -lsodium -lpthread $(pkg-config --cflags --libs libcurl) -o tox_ftv2_bot
 
     - name: check build
       run: ldd tox_ftv2_bot ; ls -al tox_ftv2_bot
