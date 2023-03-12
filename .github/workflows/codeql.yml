@@ -29,7 +29,7 @@ jobs:
         languages: ${{ matrix.language }}
 
     - name: install deps
-      run: sudo apt-get update ; sudo apt-get install -y --force-yes --no-install-recommends curl git cmake  libconfig-dev libgtest-dev libopus-dev libsodium-dev libvpx-dev pkg-config binutils libavutil-dev libavcodec-dev    libavformat-dev    libavfilter-dev    libx264-dev
+      run: sudo apt-get update ; sudo apt-get install -y --force-yes --no-install-recommends libcurl4-gnutls-dev curl git cmake  libconfig-dev libgtest-dev libopus-dev libsodium-dev libvpx-dev pkg-config binutils libavutil-dev libavcodec-dev    libavformat-dev    libavfilter-dev    libx264-dev
 
     - name: build deps
       run: git clone https://github.com/zoff99/c-toxcore ; cd ./c-toxcore/ ; cmake . ; make ; sudo make install
