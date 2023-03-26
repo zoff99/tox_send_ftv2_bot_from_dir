@@ -2045,11 +2045,11 @@ int main(int argc, char *argv[])
         if ((f_online != TOX_CONNECTION_NONE) && (ft_transferring > 0))
         {
             // HINT: iterate much faster with active filetransfers
-            usleep(2);
+            yieldcpu(2);
         }
         else
         {
-            usleep(tox_iteration_interval(toxes[0]));
+            yieldcpu(tox_iteration_interval(toxes[0]));
         }
     }
 
